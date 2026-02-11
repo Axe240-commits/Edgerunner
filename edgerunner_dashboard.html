@@ -1,0 +1,1720 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EDGERUNNER — BTC Signal Analyzer</title>
+<style>
+/* ============================================================
+   CSS RESET + VARIABLES
+   ============================================================ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #050508;
+  --bg-panel: rgba(8, 12, 20, 0.85);
+  --border: rgba(0, 212, 255, 0.15);
+  --border-glow: rgba(0, 212, 255, 0.35);
+  --cyan: #00d4ff;
+  --cyan-dim: #00729980;
+  --magenta: #ff00ff;
+  --green: #00ff88;
+  --red: #ff3355;
+  --amber: #ffaa00;
+  --text: #c8d6e5;
+  --text-dim: #5a6a7a;
+  --text-bright: #ffffff;
+  --mono: 'Courier New', 'Consolas', 'Monaco', monospace;
+  --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --panel-radius: 6px;
+  --glow-cyan: 0 0 15px rgba(0, 212, 255, 0.15);
+  --glow-magenta: 0 0 15px rgba(255, 0, 255, 0.15);
+}
+
+html, body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.4;
+  overflow: hidden;
+}
+
+/* ============================================================
+   SCANLINE + VIGNETTE OVERLAY
+   ============================================================ */
+body::before {
+  content: '';
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.03) 2px,
+    rgba(0, 0, 0, 0.03) 4px
+  );
+  pointer-events: none;
+  z-index: 9999;
+}
+
+body::after {
+  content: '';
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: radial-gradient(ellipse at center, transparent 50%, rgba(0, 0, 0, 0.4) 100%);
+  pointer-events: none;
+  z-index: 9998;
+}
+
+/* ============================================================
+   LAYOUT GRID
+   ============================================================ */
+#app {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-rows: 56px 1fr 1fr auto auto;
+  gap: 6px;
+  padding: 6px;
+  height: 100vh;
+  width: 100vw;
+}
+
+/* ============================================================
+   PANEL BASE
+   ============================================================ */
+.panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--panel-radius);
+  position: relative;
+  overflow: hidden;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.panel:hover {
+  border-color: var(--border-glow);
+  box-shadow: var(--glow-cyan);
+}
+
+/* Corner brackets */
+.panel::before, .panel::after {
+  content: '';
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-color: var(--cyan);
+  border-style: solid;
+  opacity: 0.4;
+  z-index: 2;
+}
+
+.panel::before {
+  top: -1px; left: -1px;
+  border-width: 1px 0 0 1px;
+}
+
+.panel::after {
+  bottom: -1px; right: -1px;
+  border-width: 0 1px 1px 0;
+}
+
+.panel-title {
+  font-family: var(--sans);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--cyan);
+  padding: 8px 12px 4px;
+  opacity: 0.7;
+}
+
+.panel-body {
+  padding: 4px 12px 8px;
+  height: calc(100% - 28px);
+  overflow: hidden;
+}
+
+/* ============================================================
+   HEADER
+   ============================================================ */
+#header {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  background: linear-gradient(180deg, rgba(0, 212, 255, 0.06) 0%, transparent 100%);
+  border-bottom: 1px solid var(--border);
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.logo {
+  font-family: var(--sans);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--cyan);
+  letter-spacing: 3px;
+  text-transform: uppercase;
+}
+
+.logo span {
+  color: var(--magenta);
+}
+
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.badge {
+  font-size: 9px;
+  padding: 3px 8px;
+  border: 1px solid var(--cyan);
+  border-radius: 3px;
+  color: var(--cyan);
+  letter-spacing: 1px;
+  opacity: 0.6;
+}
+
+.header-center {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.price-display {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.price-value {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text-bright);
+  font-variant-numeric: tabular-nums;
+}
+
+.price-change {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.price-change.up { color: var(--green); }
+.price-change.down { color: var(--red); }
+
+.sparkline-container {
+  width: 120px;
+  height: 32px;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+#clock {
+  font-size: 14px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================
+   CANDLESTICK CHART
+   ============================================================ */
+#chart-panel {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+#chart-panel canvas {
+  width: 100%;
+  height: 100%;
+}
+
+/* ============================================================
+   NEURAL NETWORK VIZ
+   ============================================================ */
+#neural-panel {
+  grid-column: 2;
+  grid-row: 2;
+}
+
+#neural-panel canvas {
+  width: 100%;
+  height: 100%;
+}
+
+.neural-overlay {
+  position: absolute;
+  bottom: 8px;
+  left: 12px;
+  font-size: 10px;
+  color: var(--text-dim);
+  line-height: 1.6;
+}
+
+.neural-overlay span {
+  color: var(--cyan);
+}
+
+/* ============================================================
+   FEATURE ENGINE
+   ============================================================ */
+#feature-panel {
+  grid-column: 3;
+  grid-row: 2;
+}
+
+.feature-progress {
+  font-size: 11px;
+  padding: 4px 12px;
+  color: var(--green);
+  display: flex;
+  justify-content: space-between;
+}
+
+.feature-list {
+  height: calc(100% - 52px);
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 1.7;
+}
+
+.feature-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 0 12px;
+  transition: background 0.1s;
+}
+
+.feature-item:nth-child(even) {
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.feature-name {
+  color: var(--text-dim);
+}
+
+.feature-val {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  transition: color 0.3s;
+}
+
+.feature-val.flash {
+  color: var(--cyan);
+}
+
+/* ============================================================
+   STRUCTURE ANALYSIS
+   ============================================================ */
+#structure-panel {
+  grid-column: 1;
+  grid-row: 3;
+  display: flex;
+  flex-direction: column;
+}
+
+.structure-body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 16px;
+  padding: 4px 12px;
+  font-size: 11px;
+  overflow: hidden;
+}
+
+.struct-section-title {
+  font-family: var(--sans);
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--cyan);
+  opacity: 0.5;
+  margin: 6px 0 2px;
+}
+
+.struct-section-title:first-child { margin-top: 0; }
+
+.struct-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 1px 0;
+}
+
+.struct-label {
+  color: var(--text-dim);
+}
+
+.struct-val {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.struct-val.bull { color: var(--green); }
+.struct-val.bear { color: var(--red); }
+.struct-val.neutral { color: var(--amber); }
+
+/* Event ticker at bottom */
+.event-ticker {
+  height: 22px;
+  border-top: 1px solid var(--border);
+  overflow: hidden;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.event-ticker-inner {
+  display: flex;
+  gap: 32px;
+  white-space: nowrap;
+  font-size: 10px;
+  line-height: 22px;
+  padding: 0 12px;
+  animation: tickerScroll 30s linear infinite;
+  position: absolute;
+}
+
+.event-ticker-inner .evt {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.event-ticker-inner .evt .dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.event-ticker-inner .evt .dot.bull { background: var(--green); }
+.event-ticker-inner .evt .dot.bear { background: var(--red); }
+
+.event-ticker-inner .evt .txt {
+  color: var(--text-dim);
+}
+
+.event-ticker-inner .evt .price {
+  color: var(--text);
+}
+
+@keyframes tickerScroll {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+/* ============================================================
+   SIGNAL CONFIDENCE GAUGE
+   ============================================================ */
+#signal-panel {
+  grid-column: 2;
+  grid-row: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.gauge-container {
+  position: relative;
+  width: 100%;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.gauge-container svg {
+  width: 180px;
+  height: 180px;
+}
+
+.gauge-value {
+  position: absolute;
+  font-size: 36px;
+  font-weight: 700;
+  color: var(--text-bright);
+}
+
+.gauge-label {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-align: center;
+  padding-bottom: 8px;
+  letter-spacing: 1px;
+}
+
+.gauge-status {
+  font-size: 11px;
+  color: var(--amber);
+  animation: pulse 2s ease-in-out infinite;
+  letter-spacing: 2px;
+  padding-bottom: 4px;
+}
+
+/* ============================================================
+   WHALE ACTIVITY FEED
+   ============================================================ */
+#whale-panel {
+  grid-column: 3;
+  grid-row: 3;
+}
+
+.whale-feed {
+  height: calc(100% - 28px);
+  overflow: hidden;
+  font-size: 11px;
+  padding: 4px 12px;
+}
+
+.whale-entry {
+  padding: 2px 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  opacity: 0;
+  animation: slideIn 0.3s ease forwards;
+}
+
+.tier-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.tier-dot.MEGA_WHALE { background: var(--magenta); box-shadow: 0 0 6px var(--magenta); }
+.tier-dot.WHALE { background: var(--cyan); box-shadow: 0 0 4px var(--cyan); }
+.tier-dot.DOLPHIN { background: var(--green); }
+.tier-dot.FISH { background: var(--text-dim); }
+.tier-dot.SHRIMP { background: var(--text-dim); opacity: 0.5; }
+
+.whale-addr {
+  color: var(--text-dim);
+  min-width: 90px;
+}
+
+.whale-action {
+  color: var(--text);
+  flex: 1;
+}
+
+.whale-size {
+  color: var(--amber);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================
+   CANDLE STREAM
+   ============================================================ */
+#stream-panel {
+  grid-column: 1 / 3;
+  grid-row: 4;
+  min-height: 64px;
+}
+
+.candle-stream {
+  display: flex;
+  gap: 4px;
+  padding: 4px 12px;
+  overflow: hidden;
+  height: calc(100% - 24px);
+  align-items: center;
+}
+
+.candle-card {
+  flex-shrink: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-size: 10px;
+  line-height: 1.5;
+  min-width: 110px;
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.candle-card:first-child {
+  border-color: var(--cyan-dim);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.candle-card .dir {
+  font-weight: 700;
+  font-size: 9px;
+}
+
+.candle-card .dir.bull { color: var(--green); }
+.candle-card .dir.bear { color: var(--red); }
+
+.candle-card .ohlc {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.candle-card .vol {
+  color: var(--text-dim);
+  font-size: 9px;
+}
+
+/* ============================================================
+   SYSTEM HEALTH
+   ============================================================ */
+#system-panel {
+  grid-column: 3;
+  grid-row: 4;
+  min-height: 64px;
+}
+
+.sys-rows {
+  padding: 4px 12px;
+  font-size: 11px;
+}
+
+.sys-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 1px 0;
+}
+
+.sys-label {
+  min-width: 80px;
+  color: var(--text-dim);
+}
+
+.sys-bar {
+  flex: 1;
+  height: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.sys-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.5s ease;
+  background: var(--cyan);
+}
+
+.sys-bar-fill.warn { background: var(--amber); }
+.sys-bar-fill.crit { background: var(--red); }
+
+.sys-pct {
+  min-width: 40px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+/* ============================================================
+   DATA FLOW VISUALIZATION
+   ============================================================ */
+#dataflow-panel {
+  grid-column: 1 / -1;
+  grid-row: 5;
+  min-height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 20px;
+}
+
+.dataflow-svg {
+  width: 100%;
+  height: 40px;
+}
+
+.flow-node {
+  font-family: var(--sans);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  fill: var(--cyan);
+}
+
+.flow-line {
+  stroke: var(--border);
+  stroke-width: 1;
+  fill: none;
+}
+
+.flow-packet {
+  fill: var(--cyan);
+  opacity: 0.8;
+}
+
+/* ============================================================
+   ANIMATIONS
+   ============================================================ */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+@keyframes slideIn {
+  from { opacity: 0; transform: translateX(-10px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes glow {
+  0%, 100% { box-shadow: 0 0 5px rgba(0, 212, 255, 0.1); }
+  50% { box-shadow: 0 0 20px rgba(0, 212, 255, 0.3); }
+}
+
+@keyframes numberFlash {
+  0% { color: var(--cyan); }
+  100% { color: var(--text); }
+}
+
+@keyframes flowPulse {
+  0% { opacity: 0; }
+  10% { opacity: 0.9; }
+  90% { opacity: 0.9; }
+  100% { opacity: 0; }
+}
+
+/* ============================================================
+   STATS OVERLAY (bottom-right of header)
+   ============================================================ */
+.stats-row {
+  display: flex;
+  gap: 16px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.stats-row .stat-val {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================
+   SCROLLBAR STYLING
+   ============================================================ */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--cyan-dim); }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <!-- ====== HEADER ====== -->
+  <div id="header" class="panel">
+    <div class="header-left">
+      <div class="logo">EDGE<span>RUNNER</span></div>
+      <div class="live-dot"></div>
+      <div class="badge">89 FEATURES</div>
+    </div>
+    <div class="header-center">
+      <div class="price-display">
+        <span class="price-value" id="btc-price">$0.00</span>
+        <span class="price-change up" id="btc-change">+0.00%</span>
+      </div>
+      <canvas class="sparkline-container" id="sparkline" width="240" height="64"></canvas>
+    </div>
+    <div class="header-right">
+      <div class="stats-row">
+        <span>CANDLES <span class="stat-val" id="stat-candles">0</span></span>
+        <span>PATTERNS <span class="stat-val" id="stat-patterns">0</span></span>
+        <span>UPTIME <span class="stat-val" id="stat-uptime">00:00:00</span></span>
+      </div>
+      <span id="clock">00:00:00</span>
+    </div>
+  </div>
+
+  <!-- ====== ROW 2: Chart | Neural | Features ====== -->
+  <div id="chart-panel" class="panel">
+    <div class="panel-title">Candlestick Chart — BTCUSDT 1m</div>
+    <div class="panel-body"><canvas id="chart-canvas"></canvas></div>
+  </div>
+
+  <div id="neural-panel" class="panel">
+    <div class="panel-title">Neural Network — EdgeNet-v1</div>
+    <div class="panel-body"><canvas id="neural-canvas"></canvas></div>
+    <div class="neural-overlay">
+      <span id="nn-model">EdgeNet-v1</span> / <span id="nn-params">2.4M</span> params<br>
+      Epoch <span id="nn-epoch">847</span> · Loss <span id="nn-loss">0.0023</span> · <span id="nn-inf">14.2ms</span> inference
+    </div>
+  </div>
+
+  <div id="feature-panel" class="panel">
+    <div class="panel-title">Feature Engine</div>
+    <div class="feature-progress">
+      <span id="feat-count">89/89 computed</span>
+      <span id="feat-bar">[████████████████] <span id="feat-ms">4.2ms</span></span>
+    </div>
+    <div class="feature-list" id="feature-list"></div>
+  </div>
+
+  <!-- ====== ROW 3: Structure | Signal | Whales ====== -->
+  <div id="structure-panel" class="panel">
+    <div class="panel-title">Structure Analysis</div>
+    <div class="structure-content">
+      <div class="structure-indicators" id="structure-indicators"></div>
+      <div class="structure-events" id="structure-events"></div>
+    </div>
+  </div>
+
+  <div id="signal-panel" class="panel">
+    <div class="panel-title">Signal Confidence</div>
+    <div class="gauge-container">
+      <svg viewBox="0 0 200 200" id="gauge-svg"></svg>
+      <div class="gauge-value" id="gauge-value">0%</div>
+    </div>
+    <div class="gauge-status" id="gauge-status">ANALYZING</div>
+    <div class="gauge-label" id="gauge-aligned">0/89 features aligned</div>
+  </div>
+
+  <div id="whale-panel" class="panel">
+    <div class="panel-title">Whale Activity Feed</div>
+    <div class="whale-feed" id="whale-feed"></div>
+  </div>
+
+  <!-- ====== ROW 4: Candle Stream | System ====== -->
+  <div id="stream-panel" class="panel">
+    <div class="panel-title">Candle Stream</div>
+    <div class="candle-stream" id="candle-stream"></div>
+  </div>
+
+  <div id="system-panel" class="panel">
+    <div class="panel-title">System Health</div>
+    <div class="sys-rows" id="sys-rows"></div>
+  </div>
+
+  <!-- ====== ROW 5: Data Flow ====== -->
+  <div id="dataflow-panel" class="panel">
+    <svg class="dataflow-svg" id="dataflow-svg" viewBox="0 0 1200 50"></svg>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// GLOBALS
+// ============================================================
+const API = '';  // Same origin
+let prevFeatures = {};
+let candleData = [];
+let neuralParticles = [];
+let flowPackets = [];
+
+// ============================================================
+// FETCH HELPERS
+// ============================================================
+async function api(path) {
+  try {
+    const r = await fetch(API + path);
+    if (!r.ok) return null;
+    return await r.json();
+  } catch(e) {
+    return null;
+  }
+}
+
+// ============================================================
+// FORMATTING
+// ============================================================
+function fmt(n, d=2) {
+  if (n === null || n === undefined) return '—';
+  return Number(n).toLocaleString('en-US', {minimumFractionDigits: d, maximumFractionDigits: d});
+}
+
+function fmtCompact(n) {
+  if (Math.abs(n) >= 1e9) return (n/1e9).toFixed(1) + 'B';
+  if (Math.abs(n) >= 1e6) return (n/1e6).toFixed(1) + 'M';
+  if (Math.abs(n) >= 1e3) return (n/1e3).toFixed(1) + 'K';
+  return n.toFixed(0);
+}
+
+function fmtTime(ts) {
+  const d = new Date(ts);
+  return d.toLocaleTimeString('en-US', {hour12: false});
+}
+
+function fmtUptime(s) {
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+}
+
+// ============================================================
+// CLOCK
+// ============================================================
+function updateClock() {
+  document.getElementById('clock').textContent =
+    new Date().toLocaleTimeString('en-US', {hour12: false});
+}
+setInterval(updateClock, 1000);
+updateClock();
+
+// ============================================================
+// SPARKLINE
+// ============================================================
+function drawSparkline(data) {
+  const canvas = document.getElementById('sparkline');
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  if (!data || data.length < 2) return;
+
+  const min = Math.min(...data);
+  const max = Math.max(...data);
+  const range = max - min || 1;
+
+  ctx.beginPath();
+  ctx.strokeStyle = data[data.length-1] >= data[0] ? '#00ff88' : '#ff3355';
+  ctx.lineWidth = 1.5;
+
+  for (let i = 0; i < data.length; i++) {
+    const x = (i / (data.length - 1)) * w;
+    const y = h - ((data[i] - min) / range) * (h - 4) - 2;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // Gradient fill
+  const lastY = h - ((data[data.length-1] - min) / range) * (h - 4) - 2;
+  ctx.lineTo(w, h);
+  ctx.lineTo(0, h);
+  ctx.closePath();
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  const col = data[data.length-1] >= data[0] ? '0, 255, 136' : '255, 51, 85';
+  grad.addColorStop(0, `rgba(${col}, 0.15)`);
+  grad.addColorStop(1, `rgba(${col}, 0)`);
+  ctx.fillStyle = grad;
+  ctx.fill();
+}
+
+// ============================================================
+// CANDLESTICK CHART (Canvas)
+// ============================================================
+function drawCandlestickChart(candles) {
+  const canvas = document.getElementById('chart-canvas');
+  const parent = canvas.parentElement;
+  canvas.width = parent.clientWidth * 2;
+  canvas.height = parent.clientHeight * 2;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(2, 2);
+  const w = parent.clientWidth;
+  const h = parent.clientHeight;
+
+  ctx.clearRect(0, 0, w, h);
+
+  if (!candles || candles.length < 2) return;
+
+  // Use last 60 candles
+  const data = candles.slice(-60);
+  const padding = {top: 10, bottom: 40, left: 5, right: 5};
+  const chartW = w - padding.left - padding.right;
+  const chartH = h - padding.top - padding.bottom;
+  const volH = 40;
+  const priceH = chartH - volH;
+
+  // Price range
+  let minP = Infinity, maxP = -Infinity, maxVol = 0;
+  for (const c of data) {
+    minP = Math.min(minP, c.low);
+    maxP = Math.max(maxP, c.high);
+    maxVol = Math.max(maxVol, c.volume);
+  }
+  const priceRange = maxP - minP || 1;
+
+  const candleW = chartW / data.length;
+  const bodyW = Math.max(1, candleW * 0.65);
+
+  function priceY(p) {
+    return padding.top + (1 - (p - minP) / priceRange) * priceH;
+  }
+
+  // Grid lines
+  ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+  ctx.lineWidth = 0.5;
+  for (let i = 0; i < 5; i++) {
+    const y = padding.top + (priceH / 4) * i;
+    ctx.beginPath();
+    ctx.moveTo(padding.left, y);
+    ctx.lineTo(w - padding.right, y);
+    ctx.stroke();
+
+    // Price label
+    const p = maxP - (priceRange / 4) * i;
+    ctx.fillStyle = 'rgba(255,255,255,0.15)';
+    ctx.font = '9px Courier New';
+    ctx.fillText('$' + fmt(p, 0), padding.left + 2, y - 2);
+  }
+
+  // EMA lines
+  function drawEmaLine(field, color) {
+    ctx.beginPath();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.globalAlpha = 0.5;
+    for (let i = 0; i < data.length; i++) {
+      const x = padding.left + i * candleW + candleW / 2;
+      const y = priceY(data[i][field] || data[i].close);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  drawEmaLine('ema21', '#00d4ff');
+  drawEmaLine('ema50', '#ff00ff');
+
+  // Volume bars
+  const volBase = padding.top + priceH + volH;
+  for (let i = 0; i < data.length; i++) {
+    const c = data[i];
+    const x = padding.left + i * candleW + (candleW - bodyW) / 2;
+    const vH = (c.volume / maxVol) * volH * 0.8;
+    const bullish = c.close >= c.open;
+    ctx.fillStyle = bullish ? 'rgba(0, 255, 136, 0.15)' : 'rgba(255, 51, 85, 0.15)';
+    ctx.fillRect(x, volBase - vH, bodyW, vH);
+  }
+
+  // Candles
+  for (let i = 0; i < data.length; i++) {
+    const c = data[i];
+    const x = padding.left + i * candleW + candleW / 2;
+    const bullish = c.close >= c.open;
+    const color = bullish ? '#00ff88' : '#ff3355';
+
+    // Wick
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, priceY(c.high));
+    ctx.lineTo(x, priceY(c.low));
+    ctx.stroke();
+
+    // Body
+    const bodyTop = priceY(Math.max(c.open, c.close));
+    const bodyBot = priceY(Math.min(c.open, c.close));
+    const bodyHeight = Math.max(1, bodyBot - bodyTop);
+
+    ctx.fillStyle = bullish ? '#00ff88' : '#ff3355';
+    if (bullish) {
+      ctx.fillRect(x - bodyW/2, bodyTop, bodyW, bodyHeight);
+    } else {
+      ctx.fillStyle = '#ff3355';
+      ctx.fillRect(x - bodyW/2, bodyTop, bodyW, bodyHeight);
+    }
+
+    // Last candle glow
+    if (i === data.length - 1) {
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 8;
+      ctx.fillRect(x - bodyW/2, bodyTop, bodyW, bodyHeight);
+      ctx.shadowBlur = 0;
+    }
+  }
+
+  // Swing markers
+  if (window._swingHighs) {
+    for (const sh of window._swingHighs) {
+      const idx = sh.index - (candles.length - 60);
+      if (idx >= 0 && idx < 60) {
+        const x = padding.left + idx * candleW + candleW / 2;
+        const y = priceY(sh.price) - 6;
+        ctx.fillStyle = '#ff335580';
+        ctx.beginPath();
+        ctx.moveTo(x, y); ctx.lineTo(x-4, y-6); ctx.lineTo(x+4, y-6);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+  }
+  if (window._swingLows) {
+    for (const sl of window._swingLows) {
+      const idx = sl.index - (candles.length - 60);
+      if (idx >= 0 && idx < 60) {
+        const x = padding.left + idx * candleW + candleW / 2;
+        const y = priceY(sl.price) + 6;
+        ctx.fillStyle = '#00ff8880';
+        ctx.beginPath();
+        ctx.moveTo(x, y); ctx.lineTo(x-4, y+6); ctx.lineTo(x+4, y+6);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+  }
+}
+
+// ============================================================
+// NEURAL NETWORK VISUALIZATION (Canvas)
+// ============================================================
+const NN_LAYERS = [89, 32, 16, 8, 1];
+let nnNodes = [];
+let nnConnections = [];
+let nnInitialized = false;
+
+function initNeuralNet() {
+  const canvas = document.getElementById('neural-canvas');
+  const parent = canvas.parentElement;
+  canvas.width = parent.clientWidth * 2;
+  canvas.height = parent.clientHeight * 2;
+
+  const w = parent.clientWidth;
+  const h = parent.clientHeight;
+  const padding = 30;
+
+  nnNodes = [];
+  nnConnections = [];
+
+  for (let l = 0; l < NN_LAYERS.length; l++) {
+    const count = NN_LAYERS[l];
+    const maxShow = Math.min(count, l === 0 ? 20 : count);
+    const x = padding + (l / (NN_LAYERS.length - 1)) * (w - padding * 2);
+
+    const layerNodes = [];
+    for (let n = 0; n < maxShow; n++) {
+      const y = padding + ((n + 0.5) / maxShow) * (h - padding * 2 - 20);
+      layerNodes.push({
+        x, y, radius: l === 0 ? 2 : l === NN_LAYERS.length - 1 ? 6 : 3,
+        activation: 0, layer: l
+      });
+    }
+    nnNodes.push(layerNodes);
+  }
+
+  // Create connections (sample for performance)
+  for (let l = 0; l < nnNodes.length - 1; l++) {
+    const fromLayer = nnNodes[l];
+    const toLayer = nnNodes[l + 1];
+    for (let i = 0; i < fromLayer.length; i++) {
+      const connectCount = Math.min(toLayer.length, 4);
+      for (let j = 0; j < connectCount; j++) {
+        const ti = Math.floor((j / connectCount) * toLayer.length + Math.random() * 2) % toLayer.length;
+        nnConnections.push({
+          from: fromLayer[i],
+          to: toLayer[ti],
+          weight: Math.random(),
+          pulse: 0,
+        });
+      }
+    }
+  }
+
+  nnInitialized = true;
+}
+
+function drawNeuralNet() {
+  const canvas = document.getElementById('neural-canvas');
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width / 2;
+  const h = canvas.height / 2;
+  ctx.save();
+  ctx.scale(2, 2);
+  ctx.clearRect(0, 0, w, h);
+
+  if (!nnInitialized) {
+    initNeuralNet();
+  }
+
+  const t = performance.now() / 1000;
+
+  // Draw connections
+  for (const conn of nnConnections) {
+    const alpha = 0.04 + conn.weight * 0.06;
+    ctx.strokeStyle = `rgba(0, 212, 255, ${alpha})`;
+    ctx.lineWidth = 0.5;
+    ctx.beginPath();
+    ctx.moveTo(conn.from.x, conn.from.y);
+    ctx.lineTo(conn.to.x, conn.to.y);
+    ctx.stroke();
+
+    // Pulse effect
+    conn.pulse += 0.003 + Math.random() * 0.002;
+    if (conn.pulse > 1) conn.pulse = 0;
+
+    if (conn.pulse > 0 && conn.pulse < 1) {
+      const px = conn.from.x + (conn.to.x - conn.from.x) * conn.pulse;
+      const py = conn.from.y + (conn.to.y - conn.from.y) * conn.pulse;
+      const pa = Math.sin(conn.pulse * Math.PI) * 0.8;
+      ctx.fillStyle = `rgba(0, 212, 255, ${pa})`;
+      ctx.beginPath();
+      ctx.arc(px, py, 1.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // Draw nodes
+  for (const layer of nnNodes) {
+    for (const node of layer) {
+      node.activation = 0.3 + Math.sin(t * 2 + node.x * 0.05 + node.y * 0.03) * 0.3;
+      const a = 0.3 + node.activation * 0.7;
+
+      // Glow
+      ctx.shadowColor = node.layer === NN_LAYERS.length - 1 ? '#ff00ff' : '#00d4ff';
+      ctx.shadowBlur = node.radius * 2;
+
+      ctx.fillStyle = node.layer === NN_LAYERS.length - 1
+        ? `rgba(255, 0, 255, ${a})`
+        : `rgba(0, 212, 255, ${a})`;
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.shadowBlur = 0;
+    }
+  }
+
+  // Layer labels
+  ctx.font = '8px -apple-system, sans-serif';
+  ctx.fillStyle = 'rgba(255,255,255,0.2)';
+  ctx.textAlign = 'center';
+  const labels = ['INPUT', 'HIDDEN-1', 'HIDDEN-2', 'HIDDEN-3', 'OUTPUT'];
+  for (let l = 0; l < nnNodes.length; l++) {
+    if (nnNodes[l].length > 0) {
+      ctx.fillText(labels[l], nnNodes[l][0].x, h - 5);
+      ctx.fillText(String(NN_LAYERS[l]), nnNodes[l][0].x, h - 15);
+    }
+  }
+
+  ctx.restore();
+}
+
+// ============================================================
+// FEATURE ENGINE PANEL
+// ============================================================
+function updateFeatureList(features) {
+  const el = document.getElementById('feature-list');
+
+  if (!features || features.length === 0) return;
+
+  // Build HTML if empty
+  if (el.children.length === 0) {
+    let html = '';
+    for (const f of features) {
+      html += `<div class="feature-item"><span class="feature-name">${f.name}</span><span class="feature-val" data-feat="${f.name}">${formatFeatureValue(f.value)}</span></div>`;
+    }
+    el.innerHTML = html;
+  } else {
+    // Update values, flash on change
+    for (const f of features) {
+      const valEl = el.querySelector(`[data-feat="${f.name}"]`);
+      if (valEl) {
+        const newVal = formatFeatureValue(f.value);
+        if (valEl.textContent !== newVal) {
+          valEl.textContent = newVal;
+          valEl.classList.add('flash');
+          setTimeout(() => valEl.classList.remove('flash'), 500);
+        }
+      }
+    }
+  }
+
+  // Auto-scroll effect
+  if (el.scrollTop < el.scrollHeight - el.clientHeight) {
+    el.scrollTop += 1;
+  } else {
+    el.scrollTop = 0;
+  }
+}
+
+function formatFeatureValue(v) {
+  if (v === null || v === undefined) return '—';
+  if (typeof v === 'boolean') return v ? '1' : '0';
+  if (Number.isInteger(v)) return String(v);
+  if (typeof v === 'number') {
+    if (Math.abs(v) > 1000) return fmt(v, 2);
+    if (Math.abs(v) > 1) return v.toFixed(4);
+    return v.toFixed(6);
+  }
+  return String(v);
+}
+
+// ============================================================
+// STRUCTURE ANALYSIS PANEL
+// ============================================================
+function updateStructure(data) {
+  if (!data) return;
+
+  // Store for chart
+  window._swingHighs = data.swing_highs || [];
+  window._swingLows = data.swing_lows || [];
+
+  // LEFT COLUMN: Current candle indicators
+  const indEl = document.getElementById('structure-indicators');
+  const cc = data.current_candle;
+  if (cc) {
+    const dir = cc.is_bullish ? 'bull' : 'bear';
+    const dirLabel = cc.is_bullish ? 'BULLISH' : 'BEARISH';
+    const ema21Pos = cc.close > cc.ema21 ? 'bull' : 'bear';
+    const ema50Pos = cc.close > cc.ema50 ? 'bull' : 'bear';
+    const rsiCls = cc.rsi > 70 ? 'bear' : cc.rsi < 30 ? 'bull' : 'neutral';
+    const macdCls = cc.macd > 0 ? 'bull' : 'bear';
+    const deltaCls = cc.delta_pct > 0 ? 'bull' : 'bear';
+
+    indEl.innerHTML = `
+      <div class="struct-section-title">Current Candle</div>
+      <div class="struct-row"><span class="struct-label">Direction</span><span class="struct-val ${dir}">${dirLabel}</span></div>
+      <div class="struct-row"><span class="struct-label">Open</span><span class="struct-val">$${fmt(cc.open, 2)}</span></div>
+      <div class="struct-row"><span class="struct-label">High</span><span class="struct-val">$${fmt(cc.high, 2)}</span></div>
+      <div class="struct-row"><span class="struct-label">Low</span><span class="struct-val">$${fmt(cc.low, 2)}</span></div>
+      <div class="struct-row"><span class="struct-label">Close</span><span class="struct-val">$${fmt(cc.close, 2)}</span></div>
+      <div class="struct-row"><span class="struct-label">Volume</span><span class="struct-val">${fmtCompact(cc.volume)}</span></div>
+      <div class="struct-row"><span class="struct-label">Body Ratio</span><span class="struct-val">${(cc.body_ratio * 100).toFixed(1)}%</span></div>
+      <div class="struct-section-title">Indicators</div>
+      <div class="struct-row"><span class="struct-label">RSI(14)</span><span class="struct-val ${rsiCls}">${cc.rsi.toFixed(1)}</span></div>
+      <div class="struct-row"><span class="struct-label">MACD</span><span class="struct-val ${macdCls}">${cc.macd.toFixed(4)}</span></div>
+      <div class="struct-row"><span class="struct-label">ATR(14)</span><span class="struct-val">${cc.atr.toFixed(2)}</span></div>
+      <div class="struct-row"><span class="struct-label">Delta %</span><span class="struct-val ${deltaCls}">${(cc.delta_pct * 100).toFixed(2)}%</span></div>
+      <div class="struct-row"><span class="struct-label">Vol/MA</span><span class="struct-val">${cc.vol_vs_ma.toFixed(2)}x</span></div>
+      <div class="struct-section-title">EMAs</div>
+      <div class="struct-row"><span class="struct-label">EMA 21</span><span class="struct-val ${ema21Pos}">$${fmt(cc.ema21, 2)}</span></div>
+      <div class="struct-row"><span class="struct-label">EMA 50</span><span class="struct-val ${ema50Pos}">$${fmt(cc.ema50, 2)}</span></div>
+      <div class="struct-row"><span class="struct-label">EMA 200</span><span class="struct-val">$${fmt(cc.ema200, 2)}</span></div>
+    `;
+  }
+
+  // RIGHT COLUMN: Structure events (only real BOS + swings)
+  const evEl = document.getElementById('structure-events');
+  let events = [];
+
+  // BOS events (real detections)
+  for (const bos of (data.bos_events || [])) {
+    events.push({
+      type: bos.type.replace('_', ' '),
+      cls: bos.type.includes('BULL') ? 'bull' : 'bear',
+      level: bos.level,
+      tag: bos.body_break ? 'body break' : 'wick break',
+      time: bos.time || 0,
+    });
+  }
+
+  // Swing highs
+  for (const sh of (data.swing_highs || [])) {
+    events.push({
+      type: 'SWING HIGH',
+      cls: 'bear',
+      level: sh.price,
+      tag: 'confirmed',
+      time: sh.time || 0,
+    });
+  }
+
+  // Swing lows
+  for (const sl of (data.swing_lows || [])) {
+    events.push({
+      type: 'SWING LOW',
+      cls: 'bull',
+      level: sl.price,
+      tag: 'confirmed',
+      time: sl.time || 0,
+    });
+  }
+
+  // Sort by time descending, take last 12
+  events.sort((a, b) => b.time - a.time);
+  events = events.slice(0, 12);
+
+  let html = '<div class="struct-section-title">Events</div>';
+  if (events.length === 0) {
+    html += '<div style="color:var(--text-dim);padding:4px 0">Waiting for structure breaks...</div>';
+  }
+  for (const e of events) {
+    html += `<div class="event-line"><span class="type ${e.cls}">${e.type}</span><span class="level">$${fmt(e.level, 0)}</span><span class="tag">[${e.tag}]</span></div>`;
+  }
+  evEl.innerHTML = html;
+}
+
+// ============================================================
+// SIGNAL CONFIDENCE GAUGE (SVG Arc)
+// ============================================================
+let currentGaugeValue = 0;
+let targetGaugeValue = 0;
+let lastSignalData = null;
+
+function updateGauge(signal) {
+  if (signal) {
+    lastSignalData = signal;
+    targetGaugeValue = signal.confidence || 0;
+  }
+  if (!lastSignalData) return;
+
+  // Lerp toward target
+  currentGaugeValue += (targetGaugeValue - currentGaugeValue) * 0.08;
+
+  const svg = document.getElementById('gauge-svg');
+  const val = currentGaugeValue;
+  const pct = Math.round(val * 100);
+
+  // Arc parameters
+  const cx = 100, cy = 110, r = 80;
+  const startAngle = Math.PI * 0.8;
+  const endAngle = Math.PI * 2.2;
+  const totalAngle = endAngle - startAngle;
+
+  // Background arc
+  const bgD = describeArc(cx, cy, r, startAngle, endAngle);
+
+  // Value arc
+  const valAngle = startAngle + totalAngle * val;
+  const valD = describeArc(cx, cy, r, startAngle, valAngle);
+
+  // Color based on value
+  let color;
+  if (val < 0.3) color = '#ff3355';
+  else if (val < 0.6) color = '#ffaa00';
+  else color = '#00ff88';
+
+  svg.innerHTML = `
+    <path d="${bgD}" fill="none" stroke="rgba(255,255,255,0.05)" stroke-width="8" stroke-linecap="round"/>
+    <path d="${valD}" fill="none" stroke="${color}" stroke-width="8" stroke-linecap="round"
+      style="filter: drop-shadow(0 0 6px ${color})"/>
+    <circle cx="${cx}" cy="${cy}" r="2" fill="${color}" opacity="0.6"/>
+  `;
+
+  document.getElementById('gauge-value').textContent = pct + '%';
+  document.getElementById('gauge-value').style.color = color;
+  document.getElementById('gauge-status').textContent = lastSignalData.status || 'ANALYZING';
+  document.getElementById('gauge-aligned').textContent =
+    `${lastSignalData.features_aligned || 0}/89 features aligned`;
+}
+
+function describeArc(cx, cy, r, startAngle, endAngle) {
+  const start = {x: cx + r * Math.cos(startAngle), y: cy + r * Math.sin(startAngle)};
+  const end = {x: cx + r * Math.cos(endAngle), y: cy + r * Math.sin(endAngle)};
+  const largeArc = endAngle - startAngle > Math.PI ? 1 : 0;
+  return `M ${start.x} ${start.y} A ${r} ${r} 0 ${largeArc} 1 ${end.x} ${end.y}`;
+}
+
+// ============================================================
+// WHALE ACTIVITY FEED
+// ============================================================
+let lastWhaleCount = 0;
+
+function updateWhaleFeed(data) {
+  if (!data || !data.feed) return;
+  const el = document.getElementById('whale-feed');
+  const feed = data.feed.slice(0, 20);
+
+  if (feed.length === lastWhaleCount) return;
+  lastWhaleCount = feed.length;
+
+  let html = '';
+  for (const w of feed) {
+    const tier = w.tier || 'FISH';
+    const time = fmtTime(w.time);
+    html += `<div class="whale-entry">
+      <span class="tier-dot ${tier}"></span>
+      <span class="whale-addr">${w.address}</span>
+      <span class="whale-action">${w.action}</span>
+      <span class="whale-size">$${fmtCompact(w.size_usd)}</span>
+    </div>`;
+  }
+  el.innerHTML = html;
+}
+
+// ============================================================
+// CANDLE STREAM
+// ============================================================
+function updateCandleStream(candles) {
+  if (!candles || candles.length === 0) return;
+  const el = document.getElementById('candle-stream');
+  const latest = candles.slice(-12).reverse();
+
+  let html = '';
+  for (const c of latest) {
+    const bull = c.close >= c.open;
+    const dir = bull ? 'BULL' : 'BEAR';
+    const cls = bull ? 'bull' : 'bear';
+    html += `<div class="candle-card">
+      <div class="dir ${cls}">${dir}</div>
+      <div class="ohlc">O ${fmt(c.open,0)} H ${fmt(c.high,0)}<br>L ${fmt(c.low,0)} C ${fmt(c.close,0)}</div>
+      <div class="vol">Vol ${fmtCompact(c.volume)}</div>
+    </div>`;
+  }
+  el.innerHTML = html;
+}
+
+// ============================================================
+// SYSTEM HEALTH
+// ============================================================
+function updateSystem(data) {
+  if (!data) return;
+  const el = document.getElementById('sys-rows');
+
+  const gpuPct = data.gpu_usage || 0;
+  const ramPct = data.ram_total > 0 ? (data.ram_used / data.ram_total * 100) : 0;
+  const cpuPct = data.cpu_usage || 0;
+  const diskPct = data.disk_total > 0 ? (data.disk_used / data.disk_total * 100) : 0;
+
+  function barClass(pct) {
+    if (pct > 85) return 'crit';
+    if (pct > 60) return 'warn';
+    return '';
+  }
+
+  el.innerHTML = `
+    <div class="sys-row">
+      <span class="sys-label">GPU ${data.gpu_name || ''}${data.gpu_temp ? ' ' + data.gpu_temp + '°C' : ''}</span>
+      <div class="sys-bar"><div class="sys-bar-fill ${barClass(gpuPct)}" style="width:${gpuPct}%"></div></div>
+      <span class="sys-pct">${gpuPct.toFixed(0)}%</span>
+    </div>
+    <div class="sys-row">
+      <span class="sys-label">RAM ${data.ram_used?.toFixed(1) || 0}/${data.ram_total?.toFixed(0) || 0}GB</span>
+      <div class="sys-bar"><div class="sys-bar-fill ${barClass(ramPct)}" style="width:${ramPct}%"></div></div>
+      <span class="sys-pct">${ramPct.toFixed(0)}%</span>
+    </div>
+    <div class="sys-row">
+      <span class="sys-label">CPU</span>
+      <div class="sys-bar"><div class="sys-bar-fill ${barClass(cpuPct)}" style="width:${cpuPct}%"></div></div>
+      <span class="sys-pct">${cpuPct.toFixed(0)}%</span>
+    </div>
+    <div class="sys-row">
+      <span class="sys-label">DISK</span>
+      <div class="sys-bar"><div class="sys-bar-fill ${barClass(diskPct)}" style="width:${diskPct}%"></div></div>
+      <span class="sys-pct">${diskPct.toFixed(0)}%</span>
+    </div>
+  `;
+}
+
+// ============================================================
+// DATA FLOW VISUALIZATION (SVG)
+// ============================================================
+function initDataFlow() {
+  const svg = document.getElementById('dataflow-svg');
+  const nodes = [
+    {x: 80, label: 'BINANCE'},
+    {x: 340, label: 'FEATURE ENGINE'},
+    {x: 600, label: 'NEURAL NET'},
+    {x: 860, label: 'STRUCTURE'},
+    {x: 1100, label: 'SIGNAL'},
+  ];
+
+  let html = '';
+
+  // Lines between nodes
+  for (let i = 0; i < nodes.length - 1; i++) {
+    const x1 = nodes[i].x + 50;
+    const x2 = nodes[i + 1].x - 10;
+    html += `<line class="flow-line" x1="${x1}" y1="25" x2="${x2}" y2="25"/>`;
+  }
+
+  // Node labels
+  for (const n of nodes) {
+    html += `<rect x="${n.x - 45}" y="12" width="90" height="26" rx="3"
+      fill="rgba(0,212,255,0.05)" stroke="rgba(0,212,255,0.2)" stroke-width="0.5"/>`;
+    html += `<text class="flow-node" x="${n.x}" y="29" text-anchor="middle">${n.label}</text>`;
+  }
+
+  // Animated packets
+  for (let i = 0; i < nodes.length - 1; i++) {
+    const x1 = nodes[i].x + 50;
+    const x2 = nodes[i + 1].x - 10;
+    for (let j = 0; j < 3; j++) {
+      const delay = (i * 1.5 + j * 0.6).toFixed(1);
+      const dur = (1.5 + Math.random() * 0.5).toFixed(1);
+      html += `<circle r="2.5" fill="#00d4ff" opacity="0">
+        <animate attributeName="cx" from="${x1}" to="${x2}" dur="${dur}s" begin="${delay}s" repeatCount="indefinite"/>
+        <animate attributeName="cy" values="25;23;27;25" dur="${dur}s" begin="${delay}s" repeatCount="indefinite"/>
+        <animate attributeName="opacity" values="0;0.8;0.8;0" dur="${dur}s" begin="${delay}s" repeatCount="indefinite"/>
+      </circle>`;
+    }
+  }
+
+  svg.innerHTML = html;
+}
+
+// ============================================================
+// STATS
+// ============================================================
+function updateStats(data) {
+  if (!data) return;
+  document.getElementById('stat-candles').textContent = fmtCompact(data.candles_processed || 0);
+  document.getElementById('stat-patterns').textContent = fmtCompact(data.patterns_detected || 0);
+  document.getElementById('stat-uptime').textContent = fmtUptime(data.uptime_seconds || 0);
+}
+
+// ============================================================
+// NEURAL OVERLAY
+// ============================================================
+function updateNeuralOverlay(data) {
+  if (!data) return;
+  document.getElementById('nn-model').textContent = data.model || 'EdgeNet-v1';
+  document.getElementById('nn-params').textContent = data.params || '2.4M';
+  document.getElementById('nn-epoch').textContent = data.epoch || 0;
+  document.getElementById('nn-loss').textContent = (data.loss || 0).toFixed(6);
+  document.getElementById('nn-inf').textContent = (data.inference_ms || 0).toFixed(1) + 'ms';
+}
+
+// ============================================================
+// TICKER UPDATE
+// ============================================================
+function updateTicker(data) {
+  if (!data || !data.price) return;
+
+  const priceEl = document.getElementById('btc-price');
+  const changeEl = document.getElementById('btc-change');
+
+  priceEl.textContent = '$' + fmt(data.price, 2);
+
+  const change = data.change_24h || 0;
+  const sign = change >= 0 ? '+' : '';
+  changeEl.textContent = sign + change.toFixed(2) + '%';
+  changeEl.className = 'price-change ' + (change >= 0 ? 'up' : 'down');
+}
+
+// ============================================================
+// FEATURE PROGRESS BAR
+// ============================================================
+function updateFeatureProgress(data) {
+  if (!data) return;
+  document.getElementById('feat-count').textContent = `${data.computed}/89 computed`;
+  document.getElementById('feat-ms').textContent = (data.processing_ms || 0).toFixed(1) + 'ms';
+}
+
+// ============================================================
+// POLLING LOOP
+// ============================================================
+async function pollTicker() {
+  const data = await api('/api/ticker');
+  updateTicker(data);
+  const spark = await api('/api/sparkline');
+  drawSparkline(spark);
+}
+
+async function pollCandles() {
+  const data = await api('/api/candles');
+  if (data && data.length > 0) {
+    candleData = data;
+    drawCandlestickChart(data);
+    updateCandleStream(data);
+  }
+}
+
+async function pollFeatures() {
+  const stream = await api('/api/features/stream');
+  const status = await api('/api/features/status');
+  updateFeatureList(stream);
+  updateFeatureProgress(status);
+}
+
+async function pollStructure() {
+  const data = await api('/api/structure');
+  updateStructure(data);
+}
+
+async function pollSignal() {
+  const data = await api('/api/signal');
+  updateGauge(data);
+}
+
+async function pollNeural() {
+  const data = await api('/api/neural/status');
+  updateNeuralOverlay(data);
+}
+
+async function pollWhales() {
+  const data = await api('/api/whales');
+  updateWhaleFeed(data);
+}
+
+async function pollSystem() {
+  const data = await api('/api/system');
+  updateSystem(data);
+}
+
+async function pollStats() {
+  const data = await api('/api/stats');
+  updateStats(data);
+}
+
+// ============================================================
+// ANIMATION LOOP
+// ============================================================
+let lastFrame = 0;
+
+function animationLoop(timestamp) {
+  const dt = timestamp - lastFrame;
+
+  // Draw neural net at ~30fps
+  if (dt > 33) {
+    drawNeuralNet();
+    // Smooth gauge lerp
+    if (lastSignalData) updateGauge(null);
+    lastFrame = timestamp;
+  }
+
+  requestAnimationFrame(animationLoop);
+}
+
+// ============================================================
+// RESIZE HANDLER
+// ============================================================
+function handleResize() {
+  // Reinitialize neural net on resize
+  nnInitialized = false;
+  if (candleData.length > 0) {
+    drawCandlestickChart(candleData);
+  }
+}
+
+window.addEventListener('resize', () => {
+  clearTimeout(window._resizeTimer);
+  window._resizeTimer = setTimeout(handleResize, 200);
+});
+
+// ============================================================
+// INIT
+// ============================================================
+function init() {
+  initDataFlow();
+
+  // Initial polls
+  pollTicker();
+  pollCandles();
+  pollFeatures();
+  pollStructure();
+  pollSignal();
+  pollNeural();
+  pollWhales();
+  pollSystem();
+  pollStats();
+
+  // Polling intervals
+  setInterval(pollTicker, 1000);
+  setInterval(pollCandles, 2000);
+  setInterval(pollFeatures, 2000);
+  setInterval(pollStructure, 3000);
+  setInterval(pollSignal, 1000);
+  setInterval(pollNeural, 2000);
+  setInterval(pollWhales, 5000);
+  setInterval(pollSystem, 5000);
+  setInterval(pollStats, 3000);
+
+  // Start animation loop
+  requestAnimationFrame(animationLoop);
+}
+
+document.addEventListener('DOMContentLoaded', init);
+</script>
+</body>
+</html>
