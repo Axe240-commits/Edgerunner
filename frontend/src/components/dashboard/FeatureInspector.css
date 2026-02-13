@@ -1,0 +1,68 @@
+.inspector-panel {
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+.inspector-search {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.inspector-search input {
+  flex: 1;
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 6px 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text);
+  outline: none;
+}
+
+.inspector-search input:focus {
+  border-color: var(--cyan);
+}
+
+.inspector-search button {
+  font-family: var(--mono);
+  font-size: 9px;
+  padding: 6px 12px;
+  background: rgba(0, 240, 255, 0.08);
+  border: 1px solid var(--cyan);
+  border-radius: 3px;
+  color: var(--cyan);
+  cursor: pointer;
+  letter-spacing: 1px;
+}
+
+.inspector-error {
+  font-size: 11px;
+  color: var(--red);
+  padding: 4px 0;
+}
+
+.inspector-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.inspector-group-title {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  margin-bottom: 2px;
+}
+
+.inspector-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  padding: 1px 0;
+}
+
+.inspector-key { color: var(--text-dim); }
+.inspector-val { color: var(--text); font-variant-numeric: tabular-nums; }

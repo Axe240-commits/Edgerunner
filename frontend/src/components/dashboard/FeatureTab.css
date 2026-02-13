@@ -1,0 +1,169 @@
+.feature-tab {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ftab-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  flex-shrink: 0;
+}
+
+.ftab-nav h2 {
+  font-family: var(--mono);
+  font-size: 14px;
+  letter-spacing: 3px;
+  color: var(--cyan);
+  margin: 0;
+}
+
+.ftab-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ftab-ts-input {
+  width: 140px;
+  padding: 4px 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.ftab-ts-input:focus {
+  border-color: var(--cyan);
+  outline: none;
+}
+
+.ftab-page {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.ftab-body {
+  display: grid;
+  grid-template-columns: 380px 1fr;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.ftab-table-wrap {
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.ftab-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.ftab-table thead {
+  position: sticky;
+  top: 0;
+  background: var(--bg-panel);
+  z-index: 1;
+}
+
+.ftab-table th {
+  text-align: left;
+  padding: 6px 8px;
+  color: var(--text-dim);
+  font-size: 9px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--border);
+}
+
+.ftab-table td {
+  padding: 4px 8px;
+  color: var(--text);
+  border-bottom: 1px solid rgba(0, 240, 255, 0.05);
+  font-variant-numeric: tabular-nums;
+}
+
+.ftab-table tr {
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.ftab-table tr:hover {
+  background: rgba(0, 240, 255, 0.04);
+}
+
+.ftab-table tr.selected {
+  background: rgba(0, 240, 255, 0.1);
+  border-left: 2px solid var(--cyan);
+}
+
+.ftab-events {
+  font-size: 9px;
+  letter-spacing: 0.5px;
+  color: var(--cyan);
+}
+
+.ftab-features {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ftab-group {
+  background: rgba(0, 240, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+}
+
+.ftab-group h4 {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 2px;
+  margin: 0 0 6px;
+  text-transform: uppercase;
+}
+
+.ftab-group-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 2px 16px;
+}
+
+.ftab-feat {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 1px 0;
+}
+
+.ftab-feat-name {
+  color: var(--text-dim);
+}
+
+.ftab-feat-val {
+  font-variant-numeric: tabular-nums;
+}
+
+.ftab-empty {
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 40px;
+  text-align: center;
+}

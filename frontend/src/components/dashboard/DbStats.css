@@ -1,0 +1,30 @@
+.db-stats-list {
+  font-size: 11px;
+}
+
+.db-stats-row {
+  display: flex;
+  gap: 12px;
+  padding: 2px 0;
+}
+
+.db-tf {
+  min-width: 30px;
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+.db-tf.active {
+  color: var(--cyan);
+}
+
+.db-count {
+  min-width: 60px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.db-live {
+  color: var(--text-dim);
+  font-size: 10px;
+}

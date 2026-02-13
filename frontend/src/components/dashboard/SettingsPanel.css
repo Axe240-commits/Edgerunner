@@ -1,0 +1,12 @@
+.settings-list {
+  font-size: 11px;
+}
+
+.settings-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 3px 0;
+}
+
+.settings-label { color: var(--text-dim); }
+.settings-value { color: var(--text); font-variant-numeric: tabular-nums; }

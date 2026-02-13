@@ -1,0 +1,14 @@
+.hero-chart-wrap {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0.25;
+  z-index: 0;
+}
+
+.hero-chart-wrap canvas {
+  width: 100%;
+  height: 100%;
+}

@@ -1,0 +1,42 @@
+.candle-stream {
+  display: flex;
+  gap: 4px;
+  padding: 4px 12px;
+  overflow: hidden;
+  height: calc(100% - 24px);
+  align-items: center;
+}
+
+.candle-card {
+  flex-shrink: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-size: 10px;
+  line-height: 1.5;
+  min-width: 110px;
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.candle-card:first-child {
+  border-color: var(--cyan-dim);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.candle-card .dir {
+  font-weight: 700;
+  font-size: 9px;
+}
+
+.candle-card .dir.bull { color: var(--green); }
+.candle-card .dir.bear { color: var(--red); }
+
+.candle-card .ohlc {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.candle-card .vol {
+  color: var(--text-dim);
+  font-size: 9px;
+}

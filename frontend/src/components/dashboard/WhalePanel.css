@@ -1,0 +1,43 @@
+.whale-feed {
+  height: calc(100% - 28px);
+  overflow: hidden;
+  font-size: 11px;
+  padding: 4px 12px;
+}
+
+.whale-entry {
+  padding: 2px 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  opacity: 0;
+  animation: slideIn 0.3s ease forwards;
+}
+
+.tier-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.tier-dot.MEGA_WHALE { background: var(--magenta); box-shadow: 0 0 6px var(--magenta); }
+.tier-dot.WHALE { background: var(--cyan); box-shadow: 0 0 4px var(--cyan); }
+.tier-dot.DOLPHIN { background: var(--green); }
+.tier-dot.FISH { background: var(--text-dim); }
+.tier-dot.SHRIMP { background: var(--text-dim); opacity: 0.5; }
+
+.whale-addr {
+  color: var(--text-dim);
+  min-width: 90px;
+}
+
+.whale-action {
+  color: var(--text);
+  flex: 1;
+}
+
+.whale-size {
+  color: var(--amber);
+  font-variant-numeric: tabular-nums;
+}

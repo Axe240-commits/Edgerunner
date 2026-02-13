@@ -1,0 +1,23 @@
+.sys-rows {
+  padding: 4px 12px;
+  font-size: 11px;
+}
+
+.sys-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 1px 0;
+}
+
+.sys-label {
+  min-width: 80px;
+  color: var(--text-dim);
+}
+
+.sys-pct {
+  min-width: 40px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}

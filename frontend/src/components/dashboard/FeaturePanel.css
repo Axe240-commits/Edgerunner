@@ -1,0 +1,39 @@
+.feature-progress {
+  font-size: 11px;
+  padding: 4px 12px;
+  color: var(--green);
+  display: flex;
+  justify-content: space-between;
+}
+
+.feature-list {
+  height: calc(100% - 52px);
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 1.7;
+}
+
+.feature-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 0 12px;
+  transition: background 0.1s;
+}
+
+.feature-item:nth-child(even) {
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.feature-name {
+  color: var(--text-dim);
+}
+
+.feature-val {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  transition: color 0.3s;
+}
+
+.feature-val.flash {
+  color: var(--cyan);
+}

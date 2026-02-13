@@ -1,0 +1,140 @@
+.thread-tab {
+  padding: 20px;
+  overflow-y: auto;
+}
+
+.thread-tab h2 {
+  font-family: var(--mono);
+  font-size: 14px;
+  letter-spacing: 3px;
+  color: var(--cyan);
+  margin: 0 0 16px;
+}
+
+.thread-msg {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 6px 12px;
+  margin-bottom: 12px;
+  background: rgba(255, 51, 85, 0.1);
+  border: 1px solid var(--red);
+  border-radius: 3px;
+  color: var(--red);
+}
+
+.thread-table {
+  width: 100%;
+  max-width: 800px;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 12px;
+  margin-bottom: 24px;
+}
+
+.thread-table th {
+  text-align: left;
+  padding: 8px 12px;
+  color: var(--text-dim);
+  font-size: 10px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--border);
+}
+
+.thread-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(0, 240, 255, 0.05);
+}
+
+.thread-name {
+  color: var(--text);
+}
+
+.thread-status {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  padding: 2px 8px;
+  border-radius: 2px;
+}
+
+.thread-status.live {
+  color: var(--green);
+  background: rgba(0, 255, 136, 0.1);
+  border: 1px solid rgba(0, 255, 136, 0.3);
+}
+
+.thread-status.paused {
+  color: var(--amber);
+  background: rgba(255, 170, 0, 0.1);
+  border: 1px solid rgba(255, 170, 0, 0.3);
+}
+
+.thread-interval {
+  width: 60px;
+  padding: 4px 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+  text-align: right;
+}
+
+.thread-interval:focus {
+  border-color: var(--cyan);
+  outline: none;
+}
+
+.thread-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.tf-toggles {
+  max-width: 800px;
+}
+
+.tf-toggles h3 {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 2px;
+  color: var(--cyan);
+  margin: 0 0 12px;
+}
+
+.tf-toggle-grid {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tf-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  transition: all 0.15s;
+}
+
+.tf-toggle:hover {
+  border-color: var(--cyan);
+}
+
+.tf-toggle input[type="checkbox"] {
+  accent-color: var(--cyan);
+}
+
+.tf-on {
+  color: var(--cyan);
+}
+
+.tf-off {
+  color: var(--text-dim);
+}

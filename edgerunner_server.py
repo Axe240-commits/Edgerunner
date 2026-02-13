@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Edgerunner Dashboard Server
-BTC Trading Signal Analyzer — Fancy Trading Machine UI
+Edgerunner Dashboard Server — Multi-TF BTC Trading Signal Analyzer
+
+Live data from Hyperliquid (all 9 TFs), history from Binance.
+Features computed via CandleAnalyzer, stored in separate DB tables per TF.
 
 Usage:
     python3 edgerunner_server.py              # Start auf Port 9998
@@ -13,19 +15,30 @@ import json
 import math
 import os
 import random
-import struct
 import subprocess
 import sys
 import threading
 import time
+import traceback
 import urllib.parse
 import urllib.request
 from collections import deque
 from datetime import datetime
 from http.server import ThreadingHTTPServer
 
+# Edgerunner modules
+from candle_analyzer import CandleAnalyzer
+from db import (init_db, insert_candles, count_candles, get_candle_by_ts,
+                get_ts_range, get_all_tf_stats, DEFAULT_DB_PATH, TIMEFRAMES,
+                create_user, authenticate_user, create_session,
+                validate_session, delete_session,
+                get_settings, save_settings, get_candles_paginated,
+                get_candle_neighbors)
+import hyperliquid_api
+
 PORT = int(sys.argv[sys.argv.index('--port') + 1]) if '--port' in sys.argv else 9998
 DASHBOARD_DIR = os.path.dirname(os.path.abspath(__file__))
+DIST_DIR = os.path.join(DASHBOARD_DIR, 'dist')
 WHALE_DATA_PATH = os.path.expanduser(
     '~/shadow-tracker/data/deep_profiles/whale_intel_v2.json'
 )
@@ -34,24 +47,31 @@ WHALE_DATA_PATH = os.path.expanduser(
 # GLOBAL STATE
 # ============================================================================
 
-_state_lock = threading.Lock()
+_state_lock = threading.RLock()
 
 state = {
+    # Active TF for dashboard display
+    'active_tf': '1m',
     # Ticker
     'ticker': {
         'price': 0.0, 'change_24h': 0.0, 'high_24h': 0.0,
         'low_24h': 0.0, 'volume_24h': 0.0, 'timestamp': 0,
     },
-    # Candles (last 200 1m)
+    # Candles per TF (last 200 each)
+    'candles_by_tf': {tf: [] for tf in TIMEFRAMES},
+    # Features per TF (latest candle features)
+    'features_by_tf': {tf: {} for tf in TIMEFRAMES},
+    # Structure per TF
+    'structure_by_tf': {tf: {'swing_highs': [], 'swing_lows': [], 'bos_events': []}
+                        for tf in TIMEFRAMES},
+    # Legacy single-TF references (for backward compat)
     'candles': [],
-    # Features
     'features': {
-        'values': {},       # feature_name -> current value
+        'values': {},
         'computed': 89,
-        'processing_ms': 4.2,
+        'processing_ms': 0,
         'counter': 0,
     },
-    # Structure
     'structure': {
         'swing_highs': [],
         'swing_lows': [],
@@ -103,40 +123,27 @@ _sparkline = deque(maxlen=60)
 # ============================================================================
 
 FEATURE_NAMES = [
-    # Rohdaten (7)
     'timestamp', 'open', 'high', 'low', 'close', 'volume', 'delta',
-    # Kerzen-Anatomie (8)
     'body_size', 'upper_wick', 'lower_wick', 'total_range', 'body_ratio',
     'wick_ratio', 'body_position', 'is_bullish',
-    # Volume/Delta (3)
     'delta_pct', 'vol_vs_ma', 'delta_vs_ma',
-    # Swing Structure (7)
     'is_swing_high', 'is_swing_low', 'bos_bull', 'bos_bear', 'choch',
     'dist_swing_high', 'dist_swing_low',
-    # Break Quality (9)
     'bos_body', 'bos_wick', 'break_depth', 'swing_age', 'swing_age_norm',
     'breaks_highs', 'breaks_lows', 'max_age_broken', 'min_age_broken',
-    # Paarung (13)
     'sw_body_ratio', 'sw_wick_ratio', 'sw_delta_pct', 'sw_vol_rel',
     'sw_bullish', 'sw_body_pos', 'sw_ohlc', 'vol_ratio_bsw',
     'delta_ratio_bsw', 'body_ratio_bsw', 'same_dir', 'broken_was_seeker',
     'broken_was_seeker_div',
-    # Kette (3)
     'swing_had_break', 'chain_depth', 'prev_swing_features',
-    # Cluster (3)
     'cluster_range', 'cluster_range_atr', 'cluster_spread',
-    # MACD (8)
     'macd_line', 'macd_peak', 'macd_trough', 'bull_div', 'bear_div',
     'div_near_daily', 'div_strength', 'div_width',
-    # Seeker (10)
     'is_seeker_hs', 'is_seeker_ls', 'is_seeker_div', 'seeker_div_nr',
     'dist_prev_seeker_div', 'dist_prev_seeker_div_norm', 'is_seeker_kill',
     'killed_seeker_divs', 'candle_was_seeker', 'candle_was_seeker_div',
-    # Kontext/Trend (6)
     'ema21_dist', 'ema50_dist', 'ema200_dist', 'atr14', 'rsi14', 'vwap_dist',
-    # Multi-TF (4)
     'htf_trend', 'htf_swing_high', 'htf_swing_low', 'htf_bos',
-    # Whale Features (8)
     'whale_sentiment', 'whale_confidence', 'bull_pressure', 'bear_pressure',
     'whale_cluster', 'whale_cluster_strength', 'whale_cluster_dir',
     'elite_whale_active',
@@ -144,13 +151,23 @@ FEATURE_NAMES = [
 
 assert len(FEATURE_NAMES) == 89, f'Expected 89 features, got {len(FEATURE_NAMES)}'
 
+# Swing lookback per TF
+TF_LOOKBACK = {
+    '1m': 5, '5m': 5, '15m': 3, '30m': 3,
+    '1h': 3, '4h': 3, '1d': 2, '1w': 2, '1M': 2,
+}
+
+# How many candles to fetch per TF from Hyperliquid
+TF_FETCH_LIMIT = {
+    '1m': 200, '5m': 200, '15m': 200, '30m': 100,
+    '1h': 100, '4h': 100, '1d': 50, '1w': 50, '1M': 30,
+}
 
 # ============================================================================
-# TECHNICAL INDICATORS (real computation)
+# TECHNICAL INDICATORS (for dashboard display)
 # ============================================================================
 
 def ema(values, period):
-    """Compute EMA for a list of values."""
     if not values:
         return []
     result = [values[0]]
@@ -161,7 +178,6 @@ def ema(values, period):
 
 
 def sma(values, period):
-    """Compute SMA for a list of values."""
     result = []
     for i in range(len(values)):
         start = max(0, i - period + 1)
@@ -171,7 +187,6 @@ def sma(values, period):
 
 
 def compute_rsi(closes, period=14):
-    """Compute RSI."""
     if len(closes) < period + 1:
         return [50.0] * len(closes)
     deltas = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
@@ -188,14 +203,12 @@ def compute_rsi(closes, period=14):
         else:
             rs = avg_gain / avg_loss
             result.append(100.0 - 100.0 / (1.0 + rs))
-    # Pad beginning
     while len(result) < len(closes):
         result.insert(0, 50.0)
     return result
 
 
 def compute_atr(candles, period=14):
-    """Compute ATR from candle dicts."""
     if not candles:
         return []
     trs = []
@@ -206,14 +219,12 @@ def compute_atr(candles, period=14):
         else:
             prev_c = candles[i - 1]['close']
             trs.append(max(h - l, abs(h - prev_c), abs(l - prev_c)))
-    # SMA then EMA for ATR
     if len(trs) < period:
         return trs
     atr_vals = [sum(trs[:period]) / period]
     for i in range(period, len(trs)):
         atr_vals.append((atr_vals[-1] * (period - 1) + trs[i]) / period)
-    # Pad
-    result = trs[:period - 1] + [atr_vals[0]] * 1
+    result = trs[:period - 1] + [atr_vals[0]]
     result.extend(atr_vals[1:] if len(atr_vals) > 1 else [])
     while len(result) < len(candles):
         result.insert(0, trs[0] if trs else 1.0)
@@ -221,7 +232,6 @@ def compute_atr(candles, period=14):
 
 
 def compute_macd(closes, fast=5, slow=13, signal_period=1):
-    """Compute MACD line (EMA fast - EMA slow). Signal = EMA of MACD."""
     if len(closes) < slow:
         return [0.0] * len(closes), [0.0] * len(closes)
     ema_fast = ema(closes, fast)
@@ -232,7 +242,6 @@ def compute_macd(closes, fast=5, slow=13, signal_period=1):
 
 
 def detect_swings(candles, lookback=5):
-    """Detect swing highs and swing lows. Returns lists of (index, price)."""
     swing_highs = []
     swing_lows = []
     for i in range(lookback, len(candles) - lookback):
@@ -250,32 +259,22 @@ def detect_swings(candles, lookback=5):
 
 
 def detect_bos(candles, swing_highs, swing_lows):
-    """Detect Break of Structure events."""
     events = []
     for i, c in enumerate(candles):
-        # BOS Bull: close above last swing high
         for sh in reversed(swing_highs):
             if sh['index'] < i and c['close'] > sh['price']:
                 events.append({
-                    'type': 'BOS_BULL',
-                    'index': i,
-                    'level': sh['price'],
-                    'time': c.get('time', 0),
-                    'body_break': c['open'] < sh['price'],  # body crossed the level
+                    'type': 'BOS_BULL', 'index': i, 'level': sh['price'],
+                    'time': c.get('time', 0), 'body_break': c['open'] < sh['price'],
                 })
                 break
-        # BOS Bear: close below last swing low
         for sl in reversed(swing_lows):
             if sl['index'] < i and c['close'] < sl['price']:
                 events.append({
-                    'type': 'BOS_BEAR',
-                    'index': i,
-                    'level': sl['price'],
-                    'time': c.get('time', 0),
-                    'body_break': c['open'] > sl['price'],
+                    'type': 'BOS_BEAR', 'index': i, 'level': sl['price'],
+                    'time': c.get('time', 0), 'body_break': c['open'] > sl['price'],
                 })
                 break
-    # Deduplicate: only keep first BOS per swing level
     seen = set()
     unique = []
     for e in events:
@@ -283,94 +282,209 @@ def detect_bos(candles, swing_highs, swing_lows):
         if key not in seen:
             seen.add(key)
             unique.append(e)
-    return unique[-20:]  # Keep last 20
+    return unique[-20:]
 
 
 # ============================================================================
-# THREAD 1: Binance Kline Poller
+# THREAD 1: Hyperliquid Multi-TF Poller
 # ============================================================================
 
-def _binance_kline_poller():
-    """Polls Binance for BTCUSDT 1m klines and 24h ticker every 2s."""
+_db_path = init_db()
+
+# Default analyzer settings
+DEFAULT_SETTINGS = {
+    'swing_lookback': {tf: TF_LOOKBACK.get(tf, 5) for tf in TIMEFRAMES},
+    'macd_fast': 5,
+    'macd_slow': 13,
+    'macd_signal': 1,
+    'rsi_period': 14,
+    'atr_period': 14,
+    'ema_periods': [21, 50, 200],
+    'seeker_min_wick': 0.20,
+}
+
+# Load saved settings or use defaults
+_current_settings = dict(DEFAULT_SETTINGS)
+_saved = get_settings(_db_path)
+if _saved:
+    _current_settings.update(_saved)
+
+
+def _build_analyzer(tf):
+    """Create a CandleAnalyzer with current settings for a specific TF."""
+    lookbacks = _current_settings.get('swing_lookback', {})
+    lb = lookbacks.get(tf, TF_LOOKBACK.get(tf, 5)) if isinstance(lookbacks, dict) else 5
+    ema_p = _current_settings.get('ema_periods', [21, 50, 200])
+    return CandleAnalyzer(
+        swing_lookback=lb,
+        macd_fast=_current_settings.get('macd_fast', 5),
+        macd_slow=_current_settings.get('macd_slow', 13),
+        macd_signal=_current_settings.get('macd_signal', 1),
+        rsi_period=_current_settings.get('rsi_period', 14),
+        atr_period=_current_settings.get('atr_period', 14),
+        ema_periods=tuple(ema_p),
+        seeker_min_wick=_current_settings.get('seeker_min_wick', 0.20),
+    )
+
+
+def _rebuild_analyzers():
+    """Rebuild all analyzers with current settings under lock, force re-analysis."""
+    global _analyzers, _last_candle_ts_by_tf
+    with _state_lock:
+        _analyzers = {tf: _build_analyzer(tf) for tf in TIMEFRAMES}
+        _last_candle_ts_by_tf = {tf: 0 for tf in TIMEFRAMES}
+
+
+_analyzers = {tf: _build_analyzer(tf) for tf in TIMEFRAMES}
+_last_candle_ts_by_tf = {tf: 0 for tf in TIMEFRAMES}
+
+# Thread control
+THREAD_NAMES = ['HL Multi-TF Poller', 'Ticker Poller', 'Whale Loader',
+                'System Health', 'Signal Updater']
+_pause_events = {name: threading.Event() for name in THREAD_NAMES}
+for _ev in _pause_events.values():
+    _ev.set()  # All running by default
+
+_poll_intervals = {
+    'HL Multi-TF Poller': 3,
+    'Ticker Poller': 5,
+    'Whale Loader': 15,
+    'System Health': 5,
+    'Signal Updater': 1,
+}
+_enabled_tfs = set(TIMEFRAMES)
+
+
+def _hyperliquid_poller():
+    """Polls ALL timeframes from Hyperliquid, computes features, stores to DB."""
+    global _last_candle_ts_by_tf
+
     while True:
+        _pause_events['HL Multi-TF Poller'].wait()
         try:
-            # Fetch klines
-            url = 'https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=200'
-            req = urllib.request.Request(url, headers={'User-Agent': 'Edgerunner/1.0'})
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                raw = json.loads(resp.read().decode())
+            for tf in TIMEFRAMES:
+                if tf not in _enabled_tfs:
+                    continue
+                try:
+                    limit = TF_FETCH_LIMIT.get(tf, 200)
+                    candles = hyperliquid_api.fetch_candles('BTC', tf, limit=limit)
 
-            candles = []
-            for k in raw:
-                candles.append({
-                    'time': k[0],
-                    'open': float(k[1]),
-                    'high': float(k[2]),
-                    'low': float(k[3]),
-                    'close': float(k[4]),
-                    'volume': float(k[5]),
-                    'close_time': k[6],
-                    'quote_volume': float(k[7]),
-                    'trades': k[8],
-                    'taker_buy_vol': float(k[9]),
-                    'taker_buy_quote': float(k[10]),
-                })
+                    if not candles:
+                        continue
 
-            # Compute delta proxy
-            for c in candles:
-                c['delta'] = c['taker_buy_vol'] * 2 - c['volume']
+                    latest_ts = candles[-1]['timestamp']
+                    if latest_ts == _last_candle_ts_by_tf[tf]:
+                        continue
 
-            # Compute indicators
-            closes = [c['close'] for c in candles]
-            volumes = [c['volume'] for c in candles]
+                    # Run feature engine
+                    t_start = time.time()
+                    features = _analyzers[tf].analyze_batch(candles)
+                    proc_ms = round((time.time() - t_start) * 1000, 1)
 
-            ema21 = ema(closes, 21)
-            ema50 = ema(closes, 50)
-            ema200 = ema(closes, 200)
-            rsi_vals = compute_rsi(closes)
-            atr_vals = compute_atr(candles)
-            macd_vals, macd_sig = compute_macd(closes)
-            vol_sma20 = sma(volumes, 20)
+                    if not features:
+                        continue
 
-            # Attach indicators to candles
-            for i, c in enumerate(candles):
-                c['ema21'] = ema21[i] if i < len(ema21) else closes[i]
-                c['ema50'] = ema50[i] if i < len(ema50) else closes[i]
-                c['ema200'] = ema200[i] if i < len(ema200) else closes[i]
-                c['rsi'] = rsi_vals[i] if i < len(rsi_vals) else 50.0
-                c['atr'] = atr_vals[i] if i < len(atr_vals) else 1.0
-                c['macd'] = macd_vals[i] if i < len(macd_vals) else 0.0
-                c['macd_signal'] = macd_sig[i] if i < len(macd_sig) else 0.0
-                c['vol_sma20'] = vol_sma20[i] if i < len(vol_sma20) else volumes[i]
+                    # Store to DB
+                    try:
+                        insert_candles(features, tf=tf, path=_db_path)
+                    except Exception as db_err:
+                        print(f'  [HL/{tf}] DB error: {db_err}')
 
-                # Candle anatomy
-                body = abs(c['close'] - c['open'])
-                rng = c['high'] - c['low']
-                c['body_size'] = body
-                c['upper_wick'] = c['high'] - max(c['open'], c['close'])
-                c['lower_wick'] = min(c['open'], c['close']) - c['low']
-                c['total_range'] = rng
-                c['body_ratio'] = body / rng if rng > 0 else 0.5
-                lw = c['lower_wick']
-                c['wick_ratio'] = c['upper_wick'] / lw if lw > 0 else 1.0
-                c['body_position'] = (c['close'] - c['low']) / rng if rng > 0 else 0.5
-                c['is_bullish'] = c['close'] >= c['open']
-                c['delta_pct'] = c['delta'] / c['volume'] if c['volume'] > 0 else 0.0
-                c['vol_vs_ma'] = c['volume'] / c['vol_sma20'] if c['vol_sma20'] > 0 else 1.0
+                    # Build display candles (with indicators for dashboard)
+                    display_candles = []
+                    closes = [c['close'] for c in candles]
+                    volumes = [c['volume'] for c in candles]
+                    ema21_vals = ema(closes, 21)
+                    ema50_vals = ema(closes, 50)
 
-            # Swing detection
-            swing_highs, swing_lows = detect_swings(candles)
-            bos_events = detect_bos(candles, swing_highs, swing_lows)
+                    for i, c in enumerate(candles):
+                        display_candles.append({
+                            'time': c['timestamp'],
+                            'open': c['open'],
+                            'high': c['high'],
+                            'low': c['low'],
+                            'close': c['close'],
+                            'volume': c['volume'],
+                            'delta': c.get('delta', 0),
+                            'ema21': ema21_vals[i] if i < len(ema21_vals) else c['close'],
+                            'ema50': ema50_vals[i] if i < len(ema50_vals) else c['close'],
+                        })
 
-            # Fetch 24h ticker
+                    # Swing/BOS for display
+                    lookback = TF_LOOKBACK.get(tf, 5)
+                    swing_highs, swing_lows = detect_swings(display_candles, lookback)
+                    bos_events = detect_bos(display_candles, swing_highs, swing_lows)
+
+                    # Latest features for API
+                    latest_features = features[-1]
+                    values = {}
+                    for k, v in latest_features.items():
+                        if v is None:
+                            values[k] = 0
+                        else:
+                            values[k] = v
+
+                    # Count events in last 10
+                    patterns = sum(1 for f in features[-10:] if (
+                        f.get('bos_bull') or f.get('bos_bear') or
+                        f.get('is_seeker_kill') or f.get('bull_div') or f.get('bear_div')
+                    ))
+
+                    # Update state
+                    with _state_lock:
+                        state['candles_by_tf'][tf] = display_candles
+                        state['features_by_tf'][tf] = values
+                        state['structure_by_tf'][tf] = {
+                            'swing_highs': swing_highs[-10:],
+                            'swing_lows': swing_lows[-10:],
+                            'bos_events': bos_events,
+                        }
+
+                        # Update legacy single-TF references for active TF
+                        active = state['active_tf']
+                        if tf == active:
+                            state['candles'] = display_candles
+                            state['features']['values'] = values
+                            state['features']['processing_ms'] = proc_ms
+                            state['features']['counter'] += 1
+                            state['structure'] = state['structure_by_tf'][tf]
+
+                        state['stats']['candles_processed'] += len(candles)
+                        state['stats']['features_computed'] += 89
+                        state['stats']['patterns_detected'] += patterns
+
+                        # Sparkline from 1m
+                        if tf == '1m' and candles:
+                            _sparkline.append(candles[-1]['close'])
+
+                    _last_candle_ts_by_tf[tf] = latest_ts
+
+                except Exception as e:
+                    print(f'  [HL/{tf}] Error: {e}')
+                    continue
+
+        except Exception as e:
+            print(f'  [HL Poller] Error: {e}')
+            traceback.print_exc()
+
+        time.sleep(_poll_intervals.get('HL Multi-TF Poller', 3))
+
+
+# ============================================================================
+# THREAD 2: Ticker (Binance 24h ticker — lightweight)
+# ============================================================================
+
+def _ticker_poller():
+    """Polls Binance for 24h ticker data."""
+    while True:
+        _pause_events['Ticker Poller'].wait()
+        try:
             ticker_url = 'https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT'
-            req2 = urllib.request.Request(ticker_url, headers={'User-Agent': 'Edgerunner/1.0'})
-            with urllib.request.urlopen(req2, timeout=10) as resp2:
-                ticker = json.loads(resp2.read().decode())
+            req = urllib.request.Request(ticker_url, headers={'User-Agent': 'Edgerunner/1.0'})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                ticker = json.loads(resp.read().decode())
 
-            # Update global state
             with _state_lock:
-                state['candles'] = candles
                 state['ticker'] = {
                     'price': float(ticker['lastPrice']),
                     'change_24h': float(ticker['priceChangePercent']),
@@ -379,174 +493,11 @@ def _binance_kline_poller():
                     'volume_24h': float(ticker['quoteVolume']),
                     'timestamp': int(time.time() * 1000),
                 }
-                state['structure'] = {
-                    'swing_highs': swing_highs[-10:],
-                    'swing_lows': swing_lows[-10:],
-                    'bos_events': bos_events,
-                }
-                state['stats']['candles_processed'] += len(candles)
-                _sparkline.append(float(ticker['lastPrice']))
 
         except Exception as e:
-            print(f'  [Binance] Error: {e}')
+            print(f'  [Ticker] Error: {e}')
 
-        time.sleep(2)
-
-
-# ============================================================================
-# THREAD 2: Feature Engine Simulator
-# ============================================================================
-
-def _feature_engine_simulator():
-    """Computes all 89 features — real where possible, simulated where not."""
-    while True:
-        try:
-            with _state_lock:
-                candles = state['candles'][-10:] if state['candles'] else []
-
-            if not candles:
-                time.sleep(3)
-                continue
-
-            latest = candles[-1]
-            t = time.time()
-            values = {}
-
-            # Rohdaten (7) — real
-            values['timestamp'] = latest.get('time', 0)
-            values['open'] = latest['open']
-            values['high'] = latest['high']
-            values['low'] = latest['low']
-            values['close'] = latest['close']
-            values['volume'] = round(latest['volume'], 2)
-            values['delta'] = round(latest.get('delta', 0), 2)
-
-            # Kerzen-Anatomie (8) — real
-            values['body_size'] = round(latest.get('body_size', 0), 2)
-            values['upper_wick'] = round(latest.get('upper_wick', 0), 2)
-            values['lower_wick'] = round(latest.get('lower_wick', 0), 2)
-            values['total_range'] = round(latest.get('total_range', 0), 2)
-            values['body_ratio'] = round(latest.get('body_ratio', 0), 4)
-            values['wick_ratio'] = round(latest.get('wick_ratio', 0), 4)
-            values['body_position'] = round(latest.get('body_position', 0), 4)
-            values['is_bullish'] = 1 if latest.get('is_bullish') else 0
-
-            # Volume/Delta (3) — real
-            values['delta_pct'] = round(latest.get('delta_pct', 0), 4)
-            values['vol_vs_ma'] = round(latest.get('vol_vs_ma', 0), 4)
-            values['delta_vs_ma'] = round(latest.get('delta_pct', 0) * (1 + 0.1 * math.sin(t)), 4)
-
-            # Swing (7) — partially real
-            values['is_swing_high'] = 0
-            values['is_swing_low'] = 0
-            values['bos_bull'] = 0
-            values['bos_bear'] = 0
-            values['choch'] = 0
-            values['dist_swing_high'] = round(random.uniform(0.1, 2.5), 4)
-            values['dist_swing_low'] = round(random.uniform(0.1, 2.5), 4)
-
-            # Break Quality (9) — simulated
-            values['bos_body'] = random.choice([0, 0, 0, 1])
-            values['bos_wick'] = 1 - values['bos_body']
-            values['break_depth'] = round(random.uniform(0.0, 1.5), 4)
-            values['swing_age'] = random.randint(5, 80)
-            values['swing_age_norm'] = round(values['swing_age'] / 200, 4)
-            values['breaks_highs'] = random.randint(0, 3)
-            values['breaks_lows'] = random.randint(0, 3)
-            values['max_age_broken'] = random.randint(20, 150)
-            values['min_age_broken'] = random.randint(3, 20)
-
-            # Paarung (13) — simulated
-            values['sw_body_ratio'] = round(random.uniform(0.2, 0.9), 4)
-            values['sw_wick_ratio'] = round(random.uniform(0.3, 3.0), 4)
-            values['sw_delta_pct'] = round(random.uniform(-0.3, 0.3), 4)
-            values['sw_vol_rel'] = round(random.uniform(0.5, 2.5), 4)
-            values['sw_bullish'] = random.choice([0, 1])
-            values['sw_body_pos'] = round(random.uniform(0.1, 0.9), 4)
-            values['sw_ohlc'] = round(latest['close'] + random.uniform(-100, 100), 2)
-            values['vol_ratio_bsw'] = round(random.uniform(0.3, 3.0), 4)
-            values['delta_ratio_bsw'] = round(random.uniform(-2.0, 2.0), 4)
-            values['body_ratio_bsw'] = round(random.uniform(0.3, 3.0), 4)
-            values['same_dir'] = random.choice([0, 1])
-            values['broken_was_seeker'] = random.choice([0, 0, 0, 1])
-            values['broken_was_seeker_div'] = 0
-
-            # Kette (3) — simulated
-            values['swing_had_break'] = random.choice([0, 1])
-            values['chain_depth'] = random.randint(0, 3)
-            values['prev_swing_features'] = round(random.uniform(0, 1), 4)
-
-            # Cluster (3) — simulated
-            values['cluster_range'] = round(random.uniform(10, 500), 2)
-            atr = latest.get('atr', 50)
-            values['cluster_range_atr'] = round(values['cluster_range'] / atr if atr > 0 else 0, 4)
-            values['cluster_spread'] = random.randint(5, 100)
-
-            # MACD (8) — real + simulated
-            values['macd_line'] = round(latest.get('macd', 0), 4)
-            values['macd_peak'] = 1 if latest.get('macd', 0) > 0 and random.random() > 0.85 else 0
-            values['macd_trough'] = 1 if latest.get('macd', 0) < 0 and random.random() > 0.85 else 0
-            values['bull_div'] = 1 if random.random() > 0.95 else 0
-            values['bear_div'] = 1 if random.random() > 0.95 else 0
-            values['div_near_daily'] = random.choice([0, 0, 0, 1])
-            values['div_strength'] = round(random.uniform(0, 1), 4)
-            values['div_width'] = random.randint(5, 40)
-
-            # Seeker (10) — simulated
-            values['is_seeker_hs'] = 1 if random.random() > 0.92 else 0
-            values['is_seeker_ls'] = 1 if random.random() > 0.92 else 0
-            values['is_seeker_div'] = 1 if random.random() > 0.90 else 0
-            values['seeker_div_nr'] = random.randint(0, 3) if values['is_seeker_div'] else 0
-            values['dist_prev_seeker_div'] = random.randint(5, 60)
-            values['dist_prev_seeker_div_norm'] = round(values['dist_prev_seeker_div'] / 200, 4)
-            values['is_seeker_kill'] = 1 if random.random() > 0.95 else 0
-            values['killed_seeker_divs'] = random.randint(0, 3) if values['is_seeker_kill'] else 0
-            values['candle_was_seeker'] = random.choice([0, 0, 0, 1])
-            values['candle_was_seeker_div'] = 0
-
-            # Kontext/Trend (6) — real
-            values['ema21_dist'] = round(
-                (latest['close'] - latest.get('ema21', latest['close'])) / atr if atr > 0 else 0, 4
-            )
-            values['ema50_dist'] = round(
-                (latest['close'] - latest.get('ema50', latest['close'])) / atr if atr > 0 else 0, 4
-            )
-            values['ema200_dist'] = round(
-                (latest['close'] - latest.get('ema200', latest['close'])) / atr if atr > 0 else 0, 4
-            )
-            values['atr14'] = round(atr, 2)
-            values['rsi14'] = round(latest.get('rsi', 50), 2)
-            values['vwap_dist'] = round(random.uniform(-1.5, 1.5), 4)
-
-            # Multi-TF (4) — simulated
-            values['htf_trend'] = random.choice([1, -1, 0])
-            values['htf_swing_high'] = round(latest['close'] + random.uniform(200, 2000), 2)
-            values['htf_swing_low'] = round(latest['close'] - random.uniform(200, 2000), 2)
-            values['htf_bos'] = random.choice([0, 0, 1])
-
-            # Whale Features (8) — simulated
-            values['whale_sentiment'] = round(random.uniform(-1, 1), 4)
-            values['whale_confidence'] = round(random.uniform(0.3, 0.95), 4)
-            values['bull_pressure'] = round(random.uniform(0, 1), 4)
-            values['bear_pressure'] = round(random.uniform(0, 1), 4)
-            values['whale_cluster'] = random.choice([0, 0, 1])
-            values['whale_cluster_strength'] = round(random.uniform(0, 1), 4)
-            values['whale_cluster_dir'] = random.choice([-1, 0, 1])
-            values['elite_whale_active'] = random.choice([0, 0, 0, 1])
-
-            proc_ms = round(random.uniform(3.1, 5.8), 1)
-
-            with _state_lock:
-                state['features']['values'] = values
-                state['features']['processing_ms'] = proc_ms
-                state['features']['counter'] += 1
-                state['stats']['features_computed'] += 89
-                state['stats']['patterns_detected'] += random.randint(0, 3)
-
-        except Exception as e:
-            print(f'  [FeatureEngine] Error: {e}')
-
-        time.sleep(3)
+        time.sleep(_poll_intervals.get('Ticker Poller', 5))
 
 
 # ============================================================================
@@ -556,7 +507,6 @@ def _feature_engine_simulator():
 def _whale_data_loader():
     """Loads whale profiles and generates activity feed."""
     profiles = []
-    # Load once
     try:
         if os.path.isfile(WHALE_DATA_PATH):
             with open(WHALE_DATA_PATH, 'r') as f:
@@ -566,7 +516,6 @@ def _whale_data_loader():
     except Exception as e:
         print(f'  [Whales] Load error: {e}')
 
-    # Extract compact profiles for API
     compact = []
     for p in profiles:
         port = p.get('portfolio', {})
@@ -581,7 +530,6 @@ def _whale_data_loader():
     with _state_lock:
         state['whales']['profiles'] = compact
 
-    # Generate periodic activity — BTC only for credibility
     actions = [
         'opened LONG BTC', 'opened SHORT BTC', 'closed BTC position',
         'added BTC margin', 'reduced BTC position', 'liquidated partial BTC',
@@ -592,6 +540,7 @@ def _whale_data_loader():
     ]
 
     while True:
+        _pause_events['Whale Loader'].wait()
         try:
             if compact:
                 whale = random.choice(compact)
@@ -607,11 +556,11 @@ def _whale_data_loader():
                 with _state_lock:
                     feed = state['whales']['feed']
                     feed.insert(0, entry)
-                    state['whales']['feed'] = feed[:50]  # Keep last 50
+                    state['whales']['feed'] = feed[:50]
         except Exception as e:
             print(f'  [Whales] Feed error: {e}')
 
-        time.sleep(random.uniform(8, 25))  # Random interval for realism
+        time.sleep(_poll_intervals.get('Whale Loader', 15))
 
 
 # ============================================================================
@@ -619,19 +568,19 @@ def _whale_data_loader():
 # ============================================================================
 
 def _system_health_monitor():
-    """Reads GPU/RAM/CPU/Disk from /proc and nvidia-smi."""
+    """Reads GPU/RAM/CPU/Disk."""
     while True:
+        _pause_events['System Health'].wait()
         try:
             sys_data = {}
 
-            # CPU usage from /proc/stat
+            # CPU
             try:
                 with open('/proc/stat', 'r') as f:
                     line = f.readline()
                 vals = line.split()[1:]
                 idle = int(vals[3])
                 total = sum(int(v) for v in vals[:7])
-                # Store for delta calc
                 if not hasattr(_system_health_monitor, '_prev_total'):
                     _system_health_monitor._prev_total = total
                     _system_health_monitor._prev_idle = idle
@@ -645,7 +594,7 @@ def _system_health_monitor():
             except Exception:
                 sys_data['cpu_usage'] = round(random.uniform(15, 45), 1)
 
-            # RAM from /proc/meminfo
+            # RAM
             try:
                 with open('/proc/meminfo', 'r') as f:
                     lines = f.readlines()
@@ -655,7 +604,7 @@ def _system_health_monitor():
                     mem[parts[0].rstrip(':')] = int(parts[1])
                 total_kb = mem.get('MemTotal', 0)
                 avail_kb = mem.get('MemAvailable', mem.get('MemFree', 0))
-                sys_data['ram_total'] = round(total_kb / 1024 / 1024, 1)  # GB
+                sys_data['ram_total'] = round(total_kb / 1024 / 1024, 1)
                 sys_data['ram_used'] = round((total_kb - avail_kb) / 1024 / 1024, 1)
             except Exception:
                 sys_data['ram_total'] = 64.0
@@ -664,17 +613,13 @@ def _system_health_monitor():
             # Disk
             try:
                 st = os.statvfs('/')
-                sys_data['disk_total'] = round(
-                    st.f_blocks * st.f_frsize / 1024 / 1024 / 1024, 1
-                )
-                sys_data['disk_used'] = round(
-                    (st.f_blocks - st.f_bfree) * st.f_frsize / 1024 / 1024 / 1024, 1
-                )
+                sys_data['disk_total'] = round(st.f_blocks * st.f_frsize / 1024**3, 1)
+                sys_data['disk_used'] = round((st.f_blocks - st.f_bfree) * st.f_frsize / 1024**3, 1)
             except Exception:
                 sys_data['disk_total'] = 1000
                 sys_data['disk_used'] = 350
 
-            # GPU via nvidia-smi
+            # GPU
             try:
                 result = subprocess.run(
                     ['nvidia-smi', '--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu',
@@ -688,9 +633,8 @@ def _system_health_monitor():
                     sys_data['gpu_mem'] = int(parts[2])
                     sys_data['gpu_temp'] = int(parts[4])
                 else:
-                    raise Exception('nvidia-smi failed')
+                    raise Exception('no gpu')
             except Exception:
-                # Simulate GPU for systems without nvidia-smi
                 sys_data['gpu_name'] = 'RTX 5090'
                 sys_data['gpu_usage'] = round(random.uniform(30, 85), 1)
                 sys_data['gpu_mem'] = random.randint(4000, 18000)
@@ -702,35 +646,33 @@ def _system_health_monitor():
         except Exception as e:
             print(f'  [System] Error: {e}')
 
-        time.sleep(5)
+        time.sleep(_poll_intervals.get('System Health', 5))
 
 
 # ============================================================================
-# SIGNAL CONFIDENCE (theatrical oscillation)
+# THREAD 5: Signal Confidence
 # ============================================================================
 
 def _signal_updater():
-    """Updates signal confidence — oscillates theatrically with price volatility."""
-    base = 0.5
+    """Updates signal confidence — oscillates with price volatility."""
     while True:
+        _pause_events['Signal Updater'].wait()
         try:
             with _state_lock:
-                candles = state['candles'][-20:] if state['candles'] else []
+                active = state['active_tf']
+                candles = state['candles_by_tf'].get(active, [])[-20:]
 
             if candles:
-                # Use recent volatility to drive confidence oscillation
                 closes = [c['close'] for c in candles]
                 if len(closes) >= 2:
                     returns = [abs(closes[i] - closes[i-1]) / closes[i-1]
                                for i in range(1, len(closes))]
-                    vol = sum(returns) / len(returns) * 100  # percentage
+                    vol = sum(returns) / len(returns) * 100
 
-                    # Oscillate based on volatility and time
                     t = time.time()
-                    base = 0.35 + vol * 5  # Higher vol = higher confidence
+                    base = 0.35 + vol * 5
                     noise = math.sin(t * 0.3) * 0.15 + math.sin(t * 0.7) * 0.08
                     conf = max(0.05, min(0.95, base + noise))
-
                     aligned = int(conf * 89)
 
                     with _state_lock:
@@ -739,7 +681,6 @@ def _signal_updater():
                             'features_aligned': aligned,
                             'status': 'ANALYZING' if conf < 0.7 else 'HIGH CONFIDENCE',
                         }
-                        # Update neural sim
                         state['neural']['loss'] = round(0.0023 + math.sin(t * 0.1) * 0.001, 6)
                         state['neural']['inference_ms'] = round(14.2 + math.sin(t * 0.5) * 2.3, 1)
                         state['neural']['epoch'] += random.choice([0, 0, 0, 1])
@@ -748,7 +689,7 @@ def _signal_updater():
         except Exception as e:
             print(f'  [Signal] Error: {e}')
 
-        time.sleep(1)
+        time.sleep(_poll_intervals.get('Signal Updater', 1))
 
 
 # ============================================================================
@@ -757,12 +698,40 @@ def _signal_updater():
 
 class EdgerunnerHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
-        pass  # Suppress default logging
+        pass
 
     def _cors(self):
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        origin = self.headers.get('Origin', '')
+        self.send_header('Access-Control-Allow-Origin', origin or '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.send_header('Access-Control-Allow-Credentials', 'true')
+
+    def _get_session_token(self):
+        """Extract session token from Cookie header."""
+        cookie = self.headers.get('Cookie', '')
+        for part in cookie.split(';'):
+            part = part.strip()
+            if part.startswith('edgerunner_session='):
+                return part.split('=', 1)[1]
+        return None
+
+    def _get_user(self):
+        """Get current authenticated user from session cookie."""
+        token = self._get_session_token()
+        if not token:
+            return None
+        return validate_session(token, _db_path)
+
+    def _set_session_cookie(self, token, max_age=604800):
+        """Set session cookie (7 days)."""
+        self.send_header('Set-Cookie',
+            f'edgerunner_session={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={max_age}')
+
+    def _clear_session_cookie(self):
+        """Clear session cookie."""
+        self.send_header('Set-Cookie',
+            'edgerunner_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0')
 
     def _json(self, data, status=200):
         body = json.dumps(data, ensure_ascii=False).encode()
@@ -773,41 +742,525 @@ class EdgerunnerHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _get_tf_param(self):
+        """Extract ?tf= query parameter, default to active_tf."""
+        parsed = urllib.parse.urlparse(self.path)
+        params = urllib.parse.parse_qs(parsed.query)
+        tf = params.get('tf', [None])[0]
+        if tf and tf in TIMEFRAMES:
+            return tf
+        with _state_lock:
+            return state['active_tf']
+
     def do_OPTIONS(self):
         self.send_response(204)
         self._cors()
         self.end_headers()
 
-    def do_GET(self):
+    def do_POST(self):
         path = self.path.split('?')[0]
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(content_length) if content_length > 0 else b'{}'
+
+        # --- Auth endpoints (public) ---
+        if path == '/api/auth/register':
+            try:
+                params = json.loads(body.decode())
+                username = params.get('username', '').strip()
+                password = params.get('password', '')
+                if not username or not password:
+                    self._json({'error': 'Username and password required'}, 400)
+                    return
+                if len(password) < 4:
+                    self._json({'error': 'Password must be at least 4 characters'}, 400)
+                    return
+                user = create_user(username, password, _db_path)
+                if not user:
+                    self._json({'error': 'Username already taken'}, 409)
+                    return
+                token = create_session(user['id'], path=_db_path)
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self._cors()
+                self._set_session_cookie(token)
+                data = json.dumps({'username': user['username'], 'id': user['id']}).encode()
+                self.send_header('Content-Length', str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+            except Exception as e:
+                self._json({'error': str(e)}, 400)
+
+        elif path == '/api/auth/login':
+            try:
+                params = json.loads(body.decode())
+                username = params.get('username', '').strip()
+                password = params.get('password', '')
+                user = authenticate_user(username, password, _db_path)
+                if not user:
+                    self._json({'error': 'Invalid credentials'}, 401)
+                    return
+                token = create_session(user['id'], path=_db_path)
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self._cors()
+                self._set_session_cookie(token)
+                data = json.dumps({'username': user['username'], 'id': user['id']}).encode()
+                self.send_header('Content-Length', str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+            except Exception as e:
+                self._json({'error': str(e)}, 400)
+
+        elif path == '/api/auth/logout':
+            token = self._get_session_token()
+            if token:
+                delete_session(token, _db_path)
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self._cors()
+            self._clear_session_cookie()
+            data = b'{"ok":true}'
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        # --- Protected endpoints ---
+        elif path == '/api/scenarios/filter':
+            user = self._get_user()
+            if not user:
+                self._json({'error': 'Unauthorized'}, 401)
+                return
+            try:
+                params = json.loads(body.decode())
+                from scenarios import ScenarioManager
+                sm = ScenarioManager(_db_path)
+                tf = params.pop('timeframe', '1m')
+                results = sm.filter(tf=tf, **params)
+                self._json({'count': len(results), 'candles': results[:100]})
+            except Exception as e:
+                self._json({'error': str(e)}, 400)
+
+        elif path == '/api/set_tf':
+            user = self._get_user()
+            if not user:
+                self._json({'error': 'Unauthorized'}, 401)
+                return
+            try:
+                params = json.loads(body.decode())
+                tf = params.get('tf', '1m')
+                if tf in TIMEFRAMES:
+                    with _state_lock:
+                        state['active_tf'] = tf
+                        state['candles'] = state['candles_by_tf'].get(tf, [])
+                        state['features']['values'] = state['features_by_tf'].get(tf, {})
+                        state['structure'] = state['structure_by_tf'].get(tf, {
+                            'swing_highs': [], 'swing_lows': [], 'bos_events': []
+                        })
+                    self._json({'ok': True, 'active_tf': tf})
+                else:
+                    self._json({'error': f'Unknown TF: {tf}'}, 400)
+            except Exception as e:
+                self._json({'error': str(e)}, 400)
+
+        # --- Settings ---
+        elif path == '/api/settings':
+            user = self._get_user()
+            if not user:
+                self._json({'error': 'Unauthorized'}, 401)
+                return
+            try:
+                params = json.loads(body.decode())
+                # Validate
+                allowed_keys = {'swing_lookback', 'macd_fast', 'macd_slow', 'macd_signal',
+                                'rsi_period', 'atr_period', 'ema_periods', 'seeker_min_wick'}
+                filtered = {k: v for k, v in params.items() if k in allowed_keys}
+                if not filtered:
+                    self._json({'error': 'No valid settings provided'}, 400)
+                    return
+                # Merge into current
+                _current_settings.update(filtered)
+                save_settings(_current_settings, _db_path)
+                _rebuild_analyzers()
+                self._json({'ok': True, 'settings': _current_settings})
+            except Exception as e:
+                self._json({'error': str(e)}, 400)
+
+        # --- Scenario CRUD ---
+        elif path == '/api/scenarios/create':
+            user = self._get_user()
+            if not user:
+                self._json({'error': 'Unauthorized'}, 401)
+                return
+            try:
+                params = json.loads(body.decode())
+                from scenarios import ScenarioManager
+                sm = ScenarioManager(_db_path)
+                sid = sm.create(params['name'], params.get('description', ''))
+                self._json({'ok': True, 'id': sid, 'name': params['name']})
+            except Exception as e:
+                self._json({'error': str(e)}, 400)
+
+        elif path == '/api/scenarios/delete':
+            user = self._get_user()
+            if not user:
+                self._json({'error': 'Unauthorized'}, 401)
+                return
+            try:
+                params = json.loads(body.decode())
+                from scenarios import ScenarioManager
+                sm = ScenarioManager(_db_path)
+                sm.delete(params['name'])
+                self._json({'ok': True})
+            except Exception as e:
+                self._json({'error': str(e)}, 400)
+
+        elif path == '/api/scenarios/add_candle':
+            user = self._get_user()
+            if not user:
+                self._json({'error': 'Unauthorized'}, 401)
+                return
+            try:
+                params = json.loads(body.decode())
+                from scenarios import ScenarioManager
+                sm = ScenarioManager(_db_path)
+                sm.add_candle(
+                    params['scenario'], params['timestamp'],
+                    params.get('label', 'neutral'),
+                    tf=params.get('timeframe', '1m'),
+                    notes=params.get('notes')
+                )
+                self._json({'ok': True})
+            except Exception as e:
+                self._json({'error': str(e)}, 400)
+
+        elif path == '/api/scenarios/add_filtered':
+            user = self._get_user()
+            if not user:
+                self._json({'error': 'Unauthorized'}, 401)
+                return
+            try:
+                params = json.loads(body.decode())
+                from scenarios import ScenarioManager
+                sm = ScenarioManager(_db_path)
+                scenario = params.pop('scenario')
+                label = params.pop('label', 'neutral')
+                tf = params.pop('timeframe', '1m')
+                count = sm.add_filtered(scenario, label, tf=tf, **params)
+                self._json({'ok': True, 'added': count})
+            except Exception as e:
+                self._json({'error': str(e)}, 400)
+
+        elif path == '/api/scenarios/compute_outcomes':
+            user = self._get_user()
+            if not user:
+                self._json({'error': 'Unauthorized'}, 401)
+                return
+            try:
+                params = json.loads(body.decode())
+                from scenarios import ScenarioManager
+                sm = ScenarioManager(_db_path)
+                count = sm.compute_outcomes_bulk(
+                    params['scenario'],
+                    tf=params.get('timeframe', '1m')
+                )
+                self._json({'ok': True, 'computed': count})
+            except Exception as e:
+                self._json({'error': str(e)}, 400)
+
+        # --- Pattern Matcher (no auth - read-only) ---
+        elif path == '/api/pattern/match':
+            try:
+                params = json.loads(body.decode())
+                from pattern_matcher import (find_matches, compute_match_stats,
+                                             enrich_matches_with_whales)
+                criteria = params.get('criteria', [])
+                tf = params.get('tf', '1m')
+                limit = min(int(params.get('limit', 100)), 500)
+                forward = min(int(params.get('forward_candles', 20)), 60)
+                exclude_ts = params.get('exclude_ts')
+                include_whales = params.get('include_whales', False)
+
+                matches = find_matches(
+                    criteria=criteria, tf=tf, limit=limit,
+                    forward_candles=forward, exclude_ts=exclude_ts,
+                    path=_db_path
+                )
+
+                if include_whales and matches:
+                    enrich_matches_with_whales(matches, tf=tf)
+
+                stats = compute_match_stats(matches)
+
+                # Slim down: don't send full forward candles for each match
+                # (just outcomes), keep before + meta
+                slim_matches = []
+                for m in matches:
+                    sm = {
+                        'meta': m['meta'],
+                        'before': m['before'],
+                        'outcome': m['outcome'],
+                    }
+                    if m.get('whale_context'):
+                        sm['whale_context'] = m['whale_context']
+                    slim_matches.append(sm)
+
+                self._json({
+                    'matches': slim_matches,
+                    'stats': stats,
+                    'criteria_used': criteria,
+                })
+            except Exception as e:
+                traceback.print_exc()
+                self._json({'error': str(e)}, 400)
+
+        # --- Thread Control ---
+        elif path == '/api/threads/control':
+            user = self._get_user()
+            if not user:
+                self._json({'error': 'Unauthorized'}, 401)
+                return
+            try:
+                params = json.loads(body.decode())
+                action = params.get('action')
+                thread_name = params.get('thread')
+                if thread_name and thread_name in _pause_events:
+                    if action == 'pause':
+                        _pause_events[thread_name].clear()
+                    elif action == 'resume':
+                        _pause_events[thread_name].set()
+                    elif action == 'set_interval':
+                        interval = params.get('interval')
+                        if interval and isinstance(interval, (int, float)) and interval > 0:
+                            _poll_intervals[thread_name] = interval
+                    self._json({'ok': True})
+                elif action == 'enable_tf':
+                    tf = params.get('tf')
+                    if tf and tf in TIMEFRAMES:
+                        _enabled_tfs.add(tf)
+                        self._json({'ok': True})
+                    else:
+                        self._json({'error': f'Unknown TF: {tf}'}, 400)
+                elif action == 'disable_tf':
+                    tf = params.get('tf')
+                    if tf and tf in TIMEFRAMES:
+                        _enabled_tfs.discard(tf)
+                        self._json({'ok': True})
+                    else:
+                        self._json({'error': f'Unknown TF: {tf}'}, 400)
+                else:
+                    self._json({'error': 'Invalid action or thread'}, 400)
+            except Exception as e:
+                self._json({'error': str(e)}, 400)
+
+        else:
+            self._json({'error': 'Not found'}, 404)
+
+    def _serve_static(self, path):
+        """Serve static files: dist/ first, then DASHBOARD_DIR, then SPA fallback."""
+        if path == '/':
+            path = '/index.html'
+        elif path == '/legacy':
+            path = '/edgerunner_dashboard.html'
+
+        clean = os.path.normpath(path.lstrip('/'))
+        if '..' in clean.split(os.sep):
+            self._json({'error': 'Forbidden'}, 403)
+            return
+
+        ctypes = {
+            '.html': 'text/html; charset=utf-8',
+            '.js': 'application/javascript; charset=utf-8',
+            '.css': 'text/css; charset=utf-8',
+            '.json': 'application/json; charset=utf-8',
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg',
+            '.svg': 'image/svg+xml',
+            '.ico': 'image/x-icon',
+            '.woff2': 'font/woff2',
+            '.woff': 'font/woff',
+            '.ttf': 'font/ttf',
+            '.map': 'application/json',
+        }
+
+        # Try dist/ first (Vite production build)
+        filepath = os.path.join(DIST_DIR, clean)
+        if os.path.isfile(filepath):
+            ext = os.path.splitext(filepath)[1].lower()
+            ctype = ctypes.get(ext, 'application/octet-stream')
+            with open(filepath, 'rb') as f:
+                data = f.read()
+            self.send_response(200)
+            self.send_header('Content-Type', ctype)
+            self.send_header('Content-Length', str(len(data)))
+            self._cors()
+            self.end_headers()
+            self.wfile.write(data)
+            return
+
+        # Try DASHBOARD_DIR (legacy files)
+        filepath = os.path.join(DASHBOARD_DIR, clean)
+        if os.path.isfile(filepath):
+            ext = os.path.splitext(filepath)[1].lower()
+            ctype = ctypes.get(ext, 'application/octet-stream')
+            with open(filepath, 'rb') as f:
+                data = f.read()
+            self.send_response(200)
+            self.send_header('Content-Type', ctype)
+            self.send_header('Content-Length', str(len(data)))
+            self._cors()
+            self.end_headers()
+            self.wfile.write(data)
+            return
+
+        # SPA fallback: serve dist/index.html for non-API, non-file paths
+        spa_index = os.path.join(DIST_DIR, 'index.html')
+        if os.path.isfile(spa_index):
+            with open(spa_index, 'rb') as f:
+                data = f.read()
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Content-Length', str(len(data)))
+            self._cors()
+            self.end_headers()
+            self.wfile.write(data)
+            return
+
+        self._json({'error': 'Not found'}, 404)
+
+    def do_GET(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+
+        # Auth me endpoint
+        if path == '/api/auth/me':
+            user = self._get_user()
+            if user:
+                self._json({'username': user['username'], 'user_id': user['user_id']})
+            else:
+                self._json({'error': 'Not authenticated'}, 401)
+            return
+
+        # --- Lock-free endpoints (no state needed) ---
+        if path == '/api/settings':
+            self._json({
+                'settings': _current_settings,
+                'defaults': DEFAULT_SETTINGS,
+            })
+            return
+
+        if path == '/api/threads':
+            thread_status = []
+            for name in THREAD_NAMES:
+                thread_status.append({
+                    'name': name,
+                    'running': _pause_events[name].is_set(),
+                    'interval': _poll_intervals.get(name, 0),
+                })
+            self._json({
+                'threads': thread_status,
+                'enabled_tfs': sorted(_enabled_tfs),
+                'all_tfs': TIMEFRAMES,
+            })
+            return
+
+        if path == '/api/db/candles':
+            params = urllib.parse.parse_qs(parsed.query)
+            tf = params.get('tf', ['1m'])[0]
+            if tf not in TIMEFRAMES:
+                tf = '1m'
+            page = int(params.get('page', [1])[0])
+            limit = min(int(params.get('limit', [50])[0]), 200)
+            order = params.get('order', ['desc'])[0]
+            result = get_candles_paginated(tf=tf, page=page, limit=limit,
+                                           order=order, path=_db_path)
+            result['timeframe'] = tf
+            self._json(result)
+            return
+
+        if path.startswith('/api/db/candle/') and path.endswith('/neighbors'):
+            parts = path.split('/')
+            try:
+                ts = int(parts[4])
+            except (ValueError, IndexError):
+                self._json({'error': 'Invalid timestamp'}, 400)
+                return
+            params = urllib.parse.parse_qs(parsed.query)
+            tf = params.get('tf', ['1m'])[0]
+            count = int(params.get('range', [5])[0])
+            result = get_candle_neighbors(ts, tf=tf, count=count, path=_db_path)
+            result['timeframe'] = tf
+            self._json(result)
+            return
+
+        if path.startswith('/api/scenarios/') and path.endswith('/stats'):
+            parts = path.split('/')
+            scenario_name = urllib.parse.unquote(parts[3])
+            params = urllib.parse.parse_qs(parsed.query)
+            tf = params.get('tf', ['1m'])[0]
+            from scenarios import ScenarioManager
+            sm = ScenarioManager(_db_path)
+            stats_data = sm.compare_scenario(scenario_name, tf=tf)
+            self._json(stats_data)
+            return
+
+        if path == '/api/pattern/candles':
+            from pattern_matcher import get_pattern_candles
+            params = urllib.parse.parse_qs(parsed.query)
+            try:
+                ts = int(params.get('ts', [0])[0])
+                tf = params.get('tf', ['1m'])[0]
+                lookback = int(params.get('lookback', [5])[0])
+                forward = int(params.get('forward', [5])[0])
+                result = get_pattern_candles(ts, lookback, tf=tf,
+                                             forward=forward, path=_db_path)
+                if result:
+                    self._json(result)
+                else:
+                    self._json({'error': 'Candle not found'}, 404)
+            except Exception as e:
+                self._json({'error': str(e)}, 400)
+            return
 
         with _state_lock:
-            s = state  # Reference under lock for reads
+            s = state
 
             if path == '/api/ticker':
                 self._json(s['ticker'])
 
             elif path == '/api/candles':
-                # Send candles with minimal fields for chart
+                tf = self._get_tf_param()
+                candles = s['candles_by_tf'].get(tf, [])
                 slim = []
-                for c in s['candles']:
+                for c in candles:
                     slim.append({
-                        'time': c['time'], 'open': c['open'], 'high': c['high'],
-                        'low': c['low'], 'close': c['close'], 'volume': c['volume'],
+                        'time': c.get('time', c.get('timestamp', 0)),
+                        'open': c['open'], 'high': c['high'],
+                        'low': c['low'], 'close': c['close'],
+                        'volume': c['volume'],
                         'ema21': c.get('ema21', 0), 'ema50': c.get('ema50', 0),
                     })
                 self._json(slim)
 
             elif path == '/api/candles/latest':
-                latest = s['candles'][-10:] if s['candles'] else []
+                tf = self._get_tf_param()
+                candles = s['candles_by_tf'].get(tf, [])
+                latest = candles[-10:] if candles else []
                 self._json(latest)
 
             elif path == '/api/features/status':
-                self._json(s['features'])
+                tf = self._get_tf_param()
+                features_val = s['features_by_tf'].get(tf, {})
+                self._json({
+                    'values': features_val,
+                    'computed': 89,
+                    'processing_ms': s['features']['processing_ms'],
+                    'counter': s['features']['counter'],
+                    'timeframe': tf,
+                })
 
             elif path == '/api/features/stream':
-                # Feature names with current values for scrolling display
-                vals = s['features']['values']
+                tf = self._get_tf_param()
+                vals = s['features_by_tf'].get(tf, {})
                 stream = []
                 for name in FEATURE_NAMES:
                     v = vals.get(name, 0)
@@ -818,30 +1271,34 @@ class EdgerunnerHandler(http.server.BaseHTTPRequestHandler):
                 self._json(s['neural'])
 
             elif path == '/api/structure':
-                # Enhanced structure with current candle data
-                struct = dict(s['structure'])
-                if s['candles']:
-                    c = s['candles'][-1]
+                tf = self._get_tf_param()
+                struct = dict(s['structure_by_tf'].get(tf, {
+                    'swing_highs': [], 'swing_lows': [], 'bos_events': []
+                }))
+                candles = s['candles_by_tf'].get(tf, [])
+                if candles:
+                    c = candles[-1]
                     struct['current_candle'] = {
                         'open': c['open'], 'high': c['high'],
                         'low': c['low'], 'close': c['close'],
-                        'volume': round(c['volume'], 2),
+                        'volume': round(c.get('volume', 0), 2),
                         'delta': round(c.get('delta', 0), 2),
                         'is_bullish': c['close'] >= c['open'],
-                        'body_size': round(c.get('body_size', 0), 2),
-                        'body_ratio': round(c.get('body_ratio', 0), 4),
-                        'upper_wick': round(c.get('upper_wick', 0), 2),
-                        'lower_wick': round(c.get('lower_wick', 0), 2),
                         'ema21': round(c.get('ema21', 0), 2),
                         'ema50': round(c.get('ema50', 0), 2),
-                        'ema200': round(c.get('ema200', 0), 2),
-                        'rsi': round(c.get('rsi', 50), 2),
-                        'atr': round(c.get('atr', 0), 2),
-                        'macd': round(c.get('macd', 0), 4),
-                        'delta_pct': round(c.get('delta_pct', 0), 4),
-                        'vol_vs_ma': round(c.get('vol_vs_ma', 0), 4),
                     }
+                struct['timeframe'] = tf
                 self._json(struct)
+
+            elif path == '/api/liquidations':
+                # Proxy to Shadow Tracker liq_api on port 5558
+                try:
+                    req = urllib.request.Request('http://127.0.0.1:5558/predict?coin=BTC')
+                    with urllib.request.urlopen(req, timeout=3) as resp:
+                        data = json.loads(resp.read().decode())
+                    self._json(data)
+                except Exception:
+                    self._json({'stop_predictions': [], 'current_price': 0, 'error': 'shadow-tracker offline'})
 
             elif path == '/api/whales':
                 self._json(s['whales'])
@@ -861,38 +1318,47 @@ class EdgerunnerHandler(http.server.BaseHTTPRequestHandler):
             elif path == '/api/sparkline':
                 self._json(list(_sparkline))
 
+            elif path == '/api/timeframes':
+                # List all TFs with counts and active status
+                tf_stats = get_all_tf_stats(_db_path)
+                for ts in tf_stats:
+                    ts['active'] = ts['tf'] == s['active_tf']
+                    ts['live_candles'] = len(s['candles_by_tf'].get(ts['tf'], []))
+                self._json(tf_stats)
+
+            elif path == '/api/db/stats':
+                tf = self._get_tf_param()
+                ts_range = get_ts_range(tf=tf, path=_db_path)
+                self._json({
+                    'candles': count_candles(tf=tf, path=_db_path),
+                    'db_path': _db_path,
+                    'min_ts': ts_range[0] if ts_range else None,
+                    'max_ts': ts_range[1] if ts_range else None,
+                    'timeframe': tf,
+                    'engine': 'CandleAnalyzer (real)',
+                    'source': 'Hyperliquid (live)',
+                })
+
+            elif path.startswith('/api/db/candle/'):
+                tf = self._get_tf_param()
+                try:
+                    ts = int(path.split('/')[-1])
+                    candle = get_candle_by_ts(ts, tf=tf, path=_db_path)
+                    if candle:
+                        self._json(candle)
+                    else:
+                        self._json({'error': 'Not found'}, 404)
+                except (ValueError, IndexError):
+                    self._json({'error': 'Invalid timestamp'}, 400)
+
+            elif path == '/api/scenarios':
+                from scenarios import ScenarioManager
+                sm = ScenarioManager(_db_path)
+                self._json(sm.list_all())
+
             else:
-                # Static file serving
-                if path == '/':
-                    path = '/edgerunner_dashboard.html'
-
-                clean = os.path.normpath(path.lstrip('/'))
-                if '..' in clean.split(os.sep):
-                    self._json({'error': 'Forbidden'}, 403)
-                    return
-
-                filepath = os.path.join(DASHBOARD_DIR, clean)
-                if os.path.isfile(filepath):
-                    ext = os.path.splitext(filepath)[1].lower()
-                    ctypes = {
-                        '.html': 'text/html; charset=utf-8',
-                        '.js': 'application/javascript; charset=utf-8',
-                        '.css': 'text/css; charset=utf-8',
-                        '.json': 'application/json; charset=utf-8',
-                        '.png': 'image/png',
-                        '.svg': 'image/svg+xml',
-                    }
-                    ctype = ctypes.get(ext, 'application/octet-stream')
-                    with open(filepath, 'rb') as f:
-                        data = f.read()
-                    self.send_response(200)
-                    self.send_header('Content-Type', ctype)
-                    self.send_header('Content-Length', str(len(data)))
-                    self._cors()
-                    self.end_headers()
-                    self.wfile.write(data)
-                else:
-                    self._json({'error': 'Not found'}, 404)
+                # Static file serving — prefer dist/ (Vite build), fallback to legacy
+                self._serve_static(path)
 
 
 # ============================================================================
@@ -901,17 +1367,27 @@ class EdgerunnerHandler(http.server.BaseHTTPRequestHandler):
 
 if __name__ == '__main__':
     print()
-    print('  ⚡ Edgerunner Dashboard Server')
-    print('  ' + '─' * 35)
-    print(f'  URL:      http://0.0.0.0:{PORT}')
-    print(f'  Whales:   {WHALE_DATA_PATH}')
-    print(f'  Features: {len(FEATURE_NAMES)}')
+    print('  Edgerunner Dashboard Server (Multi-TF)')
+    print('  ' + '─' * 42)
+    print(f'  URL:        http://0.0.0.0:{PORT}')
+    print(f'  Whales:     {WHALE_DATA_PATH}')
+    print(f'  Features:   {len(FEATURE_NAMES)}')
+    print(f'  DB:         {_db_path}')
+    print(f'  Timeframes: {", ".join(TIMEFRAMES)}')
+    print(f'  Live:       Hyperliquid API')
+    print(f'  History:    Binance API')
+    print()
+
+    # Print TF stats
+    for s in get_all_tf_stats(_db_path):
+        if s['count'] > 0:
+            print(f"    {s['tf']:>3s}: {s['count']:>10,} candles in DB")
     print()
 
     # Start daemon threads
     threads = [
-        ('Binance Poller', _binance_kline_poller),
-        ('Feature Engine', _feature_engine_simulator),
+        ('HL Multi-TF Poller', _hyperliquid_poller),
+        ('Ticker Poller', _ticker_poller),
         ('Whale Loader', _whale_data_loader),
         ('System Health', _system_health_monitor),
         ('Signal Updater', _signal_updater),
@@ -920,7 +1396,7 @@ if __name__ == '__main__':
     for name, target in threads:
         t = threading.Thread(target=target, daemon=True, name=name)
         t.start()
-        print(f'  ✓ {name} started')
+        print(f'  > {name} started')
 
     print()
     print(f'  Dashboard: http://192.168.0.20:{PORT}')

@@ -1,0 +1,33 @@
+.landing-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 20px;
+  font-size: 10px;
+  color: var(--text-dim);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.footer-links {
+  display: flex;
+  gap: 8px;
+}
+
+.footer-links a {
+  color: var(--text-dim);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.footer-links a:hover {
+  color: var(--cyan);
+}
+
+.footer-sep {
+  opacity: 0.3;
+}
+
+.footer-copy {
+  letter-spacing: 1px;
+}

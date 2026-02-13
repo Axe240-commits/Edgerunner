@@ -1,0 +1,56 @@
+.structure-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.structure-body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 16px;
+  padding: 4px 12px;
+  font-size: 11px;
+  overflow: hidden;
+}
+
+.struct-section-title {
+  font-family: var(--sans);
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--cyan);
+  opacity: 0.5;
+  margin: 6px 0 2px;
+}
+
+.struct-section-title:first-child { margin-top: 0; }
+
+.struct-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 1px 0;
+}
+
+.struct-label { color: var(--text-dim); }
+.struct-val { color: var(--text); font-variant-numeric: tabular-nums; }
+.struct-val.bull { color: var(--green); }
+.struct-val.bear { color: var(--red); }
+.struct-val.neutral { color: var(--amber); }
+
+.event-line {
+  display: flex;
+  gap: 6px;
+  font-size: 10px;
+  padding: 1px 0;
+}
+
+.event-line .type {
+  font-weight: 600;
+  font-size: 9px;
+}
+
+.event-line .type.bull { color: var(--green); }
+.event-line .type.bear { color: var(--red); }
+.event-line .level { color: var(--text); font-variant-numeric: tabular-nums; }
+.event-line .tag { color: var(--text-dim); font-size: 9px; }
