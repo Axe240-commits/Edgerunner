@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { api, apiPost } from '../../api/client'
-import GROUPS from '../../lib/featureGroups'
+import GROUPS, { FEATURE_META, TIER1_FEATURES, TIER2_FEATURES, TIER3_FEATURES, featureToGroup } from '../../lib/featureGroups'
+import OutcomeOverlay from './OutcomeOverlay'
 import './ScenarioTab.css'
 
 // Features suitable for pattern criteria (exclude raw OHLCV, text columns)
@@ -8,6 +9,27 @@ const MATCHABLE_FEATURES = GROUPS.flatMap(g => g.features).filter(f =>
   !['timestamp', 'open', 'high', 'low', 'close', 'volume', 'delta',
     'sw_ohlc', 'prev_swing_features'].includes(f)
 )
+
+// Binary features that should default to bool operator
+const BINARY_FEATURES = new Set([
+  'is_bullish', 'is_swing_high', 'is_swing_low', 'bos_bull', 'bos_bear',
+  'choch', 'bos_body', 'bos_wick', 'sw_bullish', 'same_dir',
+  'broken_was_seeker', 'broken_was_seeker_div', 'swing_had_break',
+  'macd_peak', 'macd_trough', 'bull_div', 'bear_div', 'div_near_daily',
+  'is_seeker_hs', 'is_seeker_ls', 'is_seeker_div', 'is_seeker_kill',
+  'candle_was_seeker', 'candle_was_seeker_div', 'htf_bos',
+  'whale_cluster', 'elite_whale_active',
+])
+
+const OPERATOR_OPTIONS = [
+  { value: '=', label: '= ± tol' },
+  { value: 'bool', label: 'bool' },
+  { value: '>', label: '>' },
+  { value: '<', label: '<' },
+  { value: '>=', label: '>=' },
+  { value: '<=', label: '<=' },
+  { value: 'range', label: 'range' },
+]
 
 const fmt = (v, feat) => {
   if (v == null || v === '') return '—'
@@ -23,11 +45,140 @@ const fmt = (v, feat) => {
 
 const fmtTs = ts => {
   if (!ts) return '—'
-  const d = new Date(ts)
-  return d.toISOString().replace('T', ' ').slice(0, 19)
+  return new Date(ts).toLocaleString('sv-SE', { timeZone: 'Europe/Berlin' })
 }
 
-export default function ScenarioTab({ tf }) {
+/* ── Individual Candle Slot ─────────────────────────────────── */
+function CandleSlot({ candle, label, selected, isMeta, criteriaCount, onClick }) {
+  const canvasRef = useRef(null)
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas || !candle) return
+    const ctx = canvas.getContext('2d')
+    const dpr = window.devicePixelRatio || 1
+    const w = canvas.clientWidth
+    const h = canvas.clientHeight
+    canvas.width = w * dpr
+    canvas.height = h * dpr
+    ctx.scale(dpr, dpr)
+    ctx.clearRect(0, 0, w, h)
+
+    const c = candle
+    const range = c.high - c.low
+    if (range <= 0) return
+
+    const isBull = c.close >= c.open
+    const bodyCol = isBull ? '#00ff88' : '#ff3355'
+    const accent = isMeta ? '#ffaa00' : '#00f0ff'
+
+    const padT = 10, padB = 10
+    const chartH = h - padT - padB
+    const priceX = 50
+    const candleX = Math.round(w * 0.47)
+    const bodyW = 22
+    const annotX = candleX + bodyW / 2 + 8
+
+    const pPad = range * 0.06
+    const pMin = c.low - pPad
+    const pMax = c.high + pPad
+    const pSpan = pMax - pMin
+    const toY = (p) => padT + chartH * (1 - (p - pMin) / pSpan)
+
+    // wick
+    ctx.strokeStyle = bodyCol
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    ctx.moveTo(candleX, toY(c.high))
+    ctx.lineTo(candleX, toY(c.low))
+    ctx.stroke()
+
+    // body
+    const bTop = toY(Math.max(c.open, c.close))
+    const bBot = toY(Math.min(c.open, c.close))
+    const bH = Math.max(2, bBot - bTop)
+    ctx.fillStyle = isBull ? 'rgba(0,255,136,0.85)' : 'rgba(255,51,85,0.85)'
+    ctx.fillRect(candleX - bodyW / 2, bTop, bodyW, bH)
+    ctx.strokeStyle = bodyCol
+    ctx.lineWidth = 1.5
+    ctx.strokeRect(candleX - bodyW / 2, bTop, bodyW, bH)
+
+    // measurements
+    const upperWick = c.high - Math.max(c.open, c.close)
+    const lowerWick = Math.min(c.open, c.close) - c.low
+    const bodySize = Math.abs(c.close - c.open)
+    const upperPct = (upperWick / range * 100)
+    const bodyPct = (bodySize / range * 100)
+    const lowerPct = (lowerWick / range * 100)
+
+    const drawBracket = (x, y1, y2, color, text) => {
+      if (y2 - y1 < 16) return
+      const mid = (y1 + y2) / 2
+      ctx.strokeStyle = color
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      ctx.moveTo(x - 3, y1 + 1); ctx.lineTo(x + 3, y1 + 1)
+      ctx.moveTo(x, y1 + 1); ctx.lineTo(x, y2 - 1)
+      ctx.moveTo(x - 3, y2 - 1); ctx.lineTo(x + 3, y2 - 1)
+      ctx.stroke()
+      ctx.fillStyle = color
+      ctx.font = '10px monospace'
+      ctx.textAlign = 'left'
+      ctx.fillText(text, x + 6, mid + 4)
+    }
+
+    drawBracket(annotX, toY(c.high), bTop, 'rgba(0,240,255,0.7)', `${upperPct.toFixed(1)}%`)
+    drawBracket(annotX, bTop, bTop + bH, bodyCol, `${bodyPct.toFixed(1)}%`)
+    drawBracket(annotX, bTop + bH, toY(c.low), 'rgba(0,240,255,0.7)', `${lowerPct.toFixed(1)}%`)
+
+    // OHLC prices (left)
+    ctx.font = '9px monospace'
+    ctx.textAlign = 'right'
+    ctx.fillStyle = accent
+    ctx.fillText(`H ${c.high.toFixed(0)}`, priceX, toY(c.high) + 3)
+    ctx.fillText(`L ${c.low.toFixed(0)}`, priceX, toY(c.low) + 3)
+    const oY = toY(c.open), cY = toY(c.close)
+    const hY = toY(c.high), lY = toY(c.low)
+    ctx.fillStyle = bodyCol
+    if (Math.abs(oY - hY) > 14 && Math.abs(oY - lY) > 14)
+      ctx.fillText(`O ${c.open.toFixed(0)}`, priceX, oY + 3)
+    if (Math.abs(cY - hY) > 14 && Math.abs(cY - lY) > 14 && Math.abs(cY - oY) > 14)
+      ctx.fillText(`C ${c.close.toFixed(0)}`, priceX, cY + 3)
+  }, [candle, selected, isMeta])
+
+  if (!candle) return null
+
+  const isBull = candle.close >= candle.open
+  const events = []
+  if (candle.bos_bull) events.push({ l: 'BOS+', c: '#00ff88' })
+  if (candle.bos_bear) events.push({ l: 'BOS-', c: '#ff3355' })
+  if (candle.is_seeker_kill) events.push({ l: 'KILL', c: '#ff00ff' })
+  if (candle.bull_div) events.push({ l: 'DIV+', c: '#44ffaa' })
+  if (candle.bear_div) events.push({ l: 'DIV-', c: '#aa44ff' })
+  if (candle.choch) events.push({ l: 'CHoCH', c: '#ffd700' })
+
+  return (
+    <div className={`pm-slot ${selected ? 'selected' : ''} ${isMeta ? 'meta' : ''}`}
+      onClick={onClick}>
+      <div className="pm-slot-header">
+        <span className="pm-slot-label">{label}</span>
+        {criteriaCount > 0 && <span className="pm-slot-badge">{criteriaCount}</span>}
+        <span className={`pm-slot-dir ${isBull ? 'up' : 'down'}`}>{isBull ? '▲' : '▼'}</span>
+      </div>
+      <canvas ref={canvasRef} className="pm-slot-canvas" />
+      <div className="pm-slot-footer">
+        <span className="pm-slot-ts">{fmtTs(candle.timestamp)?.slice(11, 16)}</span>
+        {events.length > 0 && (
+          <span className="pm-slot-events">
+            {events.map((e, i) => <span key={i} style={{ color: e.c }}>{e.l} </span>)}
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+export default function ScenarioTab({ tf, initialTs, onTsClear, signals }) {
   // Meta candle selection
   const [metaTs, setMetaTs] = useState('')
   const [lookback, setLookback] = useState(3)
@@ -48,6 +199,90 @@ export default function ScenarioTab({ tf }) {
   // Expanded match detail
   const [expandedMatch, setExpandedMatch] = useState(null)
 
+  // Pattern save/load dialogs
+  const [showSaveDialog, setShowSaveDialog] = useState(false)
+  const [showLoadDialog, setShowLoadDialog] = useState(false)
+  const [saveName, setSaveName] = useState('')
+  const [saveDesc, setSaveDesc] = useState('')
+  const [savedPatterns, setSavedPatterns] = useState([])
+  const [loadingPatterns, setLoadingPatterns] = useState(false)
+
+  // Discovery
+  const [showDiscovery, setShowDiscovery] = useState(false)
+  const [discoveries, setDiscoveries] = useState([])
+  const [discovering, setDiscovering] = useState(false)
+
+  // Dismiss signal
+  const dismissSignal = async (id) => {
+    await apiPost('/api/signals/dismiss', { id })
+  }
+
+  // Run auto-discovery
+  const runDiscovery = async () => {
+    setDiscovering(true)
+    setMsg('')
+    const res = await apiPost('/api/pattern/discover', {
+      tf,
+      lookback,
+      forward_candles: forwardCandles,
+      min_cluster_size: 5,
+      min_win_rate: 55,
+      scan_limit: 10000,
+    })
+    setDiscovering(false)
+    if (res?.discoveries) {
+      setDiscoveries(res.discoveries)
+      if (res.discoveries.length === 0) setMsg('No patterns found with these thresholds')
+    } else {
+      setMsg(res?.error || 'Discovery failed')
+    }
+  }
+
+  // Use a discovery as criteria
+  const useDiscovery = (disc) => {
+    // Build criteria from suggested_criteria
+    const newCriteria = { 0: {} }
+    for (const sc of disc.suggested_criteria || []) {
+      newCriteria[0][sc.feature] = {
+        enabled: true,
+        op: sc.op,
+        value: sc.value ?? 0,
+        tolerance: sc.tolerance ?? 0,
+        min: sc.min,
+        max: sc.max,
+      }
+    }
+    setCriteria(newCriteria)
+    setSelectedPos(0)
+    setShowDiscovery(false)
+    setMsg(`Discovery loaded with ${disc.suggested_criteria?.length || 0} criteria`)
+  }
+
+  // Save discovery directly as pattern
+  const saveDiscovery = async (disc) => {
+    const name = `auto_${disc.direction}_WR${disc.win_rate}_${Date.now().toString(36)}`
+    const criteriaArr = [{
+      offset: 0,
+      features: Object.fromEntries(
+        (disc.suggested_criteria || []).map(sc => [sc.feature, {
+          op: sc.op, value: sc.value, tolerance: sc.tolerance,
+          min: sc.min, max: sc.max,
+        }])
+      )
+    }]
+    const res = await apiPost('/api/pattern/save', {
+      name,
+      description: `Auto-discovered: ${disc.direction} WR:${disc.win_rate}% Size:${disc.size}`,
+      tf,
+      lookback: 0,
+      meta_ts: 0,
+      criteria: criteriaArr,
+      is_active: 1,
+    })
+    if (res?.ok) setMsg(`Pattern "${name}" saved`)
+    else setMsg(res?.error || 'Save failed')
+  }
+
   // Message
   const [msg, setMsg] = useState('')
 
@@ -67,11 +302,12 @@ export default function ScenarioTab({ tf }) {
     }
     setPatternData(data)
     setResults(null)
-    // Init criteria from loaded candle positions
+    // Init criteria — only for actual lookback positions (not extra context)
+    const patternCount = Math.min(lookback, data.before.length)
     const newCriteria = {}
     newCriteria[0] = {}
-    for (let i = 0; i < data.before.length; i++) {
-      newCriteria[-(data.before.length - i)] = {}
+    for (let i = 0; i < patternCount; i++) {
+      newCriteria[-(patternCount - i)] = {}
     }
     setCriteria(newCriteria)
     setSelectedPos(0)
@@ -88,23 +324,142 @@ export default function ScenarioTab({ tf }) {
     }
   }, [tf])
 
-  // Run pattern match
-  const runMatch = async () => {
-    if (!patternData) { setMsg('Load a candle first'); return }
+  // Auto-load when coming from Feature Browser via "Use as Pattern" button
+  useEffect(() => {
+    if (initialTs) {
+      setMetaTs(String(initialTs))
+      // Trigger load after state update
+      const ts = initialTs
+      setTimeout(() => {
+        api(`/api/pattern/candles?ts=${ts}&tf=${tf}&lookback=${lookback}&forward=5`).then(data => {
+          if (data && !data.error) {
+            setPatternData(data)
+            setResults(null)
+            const patternCount = Math.min(lookback, data.before.length)
+            const newCriteria = {}
+            newCriteria[0] = {}
+            for (let i = 0; i < patternCount; i++) {
+              newCriteria[-(patternCount - i)] = {}
+            }
+            setCriteria(newCriteria)
+            setSelectedPos(0)
+          }
+        })
+      }, 50)
+      if (onTsClear) onTsClear()
+    }
+  }, [initialTs])
 
-    // Build criteria array from state
+  // Build criteria array from current state — shared helper
+  const buildCriteriaArray = useCallback(() => {
     const criteriaArr = []
     for (const [offset, feats] of Object.entries(criteria)) {
       const enabledFeats = {}
       for (const [feat, spec] of Object.entries(feats)) {
-        if (spec.enabled) {
-          enabledFeats[feat] = { value: spec.value, tolerance: spec.tolerance }
+        if (!spec.enabled) continue
+        const entry = { value: spec.value, op: spec.op || '=' }
+        if (entry.op === '=') {
+          entry.tolerance = spec.tolerance || 0
+        } else if (entry.op === 'range') {
+          entry.min = spec.min ?? 0
+          entry.max = spec.max ?? 0
+          delete entry.value
+        } else if (entry.op === 'bool') {
+          entry.value = spec.value ? 1 : 0
         }
+        enabledFeats[feat] = entry
       }
       if (Object.keys(enabledFeats).length > 0) {
         criteriaArr.push({ offset: parseInt(offset, 10), features: enabledFeats })
       }
     }
+    return criteriaArr
+  }, [criteria])
+
+  // Save current pattern
+  const saveCurrentPattern = async () => {
+    if (!saveName.trim()) { setMsg('Pattern name required'); return }
+    const criteriaArr = buildCriteriaArray()
+    const res = await apiPost('/api/pattern/save', {
+      name: saveName.trim(),
+      description: saveDesc,
+      tf,
+      lookback,
+      meta_ts: parseInt(metaTs, 10) || 0,
+      criteria: criteriaArr,
+      is_active: 1,
+    })
+    if (res?.ok) {
+      setMsg(`Pattern "${saveName}" saved`)
+      setShowSaveDialog(false)
+      setSaveName('')
+      setSaveDesc('')
+    } else {
+      setMsg(res?.error || 'Save failed')
+    }
+  }
+
+  // Load patterns list
+  const openLoadDialog = async () => {
+    setShowLoadDialog(true)
+    setLoadingPatterns(true)
+    const res = await api('/api/patterns')
+    setLoadingPatterns(false)
+    if (res?.patterns) setSavedPatterns(res.patterns)
+  }
+
+  // Load a saved pattern into editor
+  const loadSavedPattern = async (pat) => {
+    setShowLoadDialog(false)
+    setMetaTs(String(pat.meta_ts || ''))
+    setLookback(pat.lookback || 3)
+
+    // Load candle data
+    if (pat.meta_ts) {
+      setLoading(true)
+      const data = await api(`/api/pattern/candles?ts=${pat.meta_ts}&tf=${pat.tf || tf}&lookback=${pat.lookback || 3}&forward=5`)
+      setLoading(false)
+      if (data && !data.error) {
+        setPatternData(data)
+        setResults(null)
+
+        // Restore criteria from saved pattern
+        const newCriteria = {}
+        const patternCount = Math.min(pat.lookback || 3, data.before.length)
+        newCriteria[0] = {}
+        for (let i = 0; i < patternCount; i++) {
+          newCriteria[-(patternCount - i)] = {}
+        }
+        // Apply saved criteria
+        for (const c of (pat.criteria || [])) {
+          const offset = c.offset
+          if (newCriteria[offset] === undefined) newCriteria[offset] = {}
+          for (const [feat, spec] of Object.entries(c.features || {})) {
+            newCriteria[offset][feat] = { enabled: true, ...spec }
+          }
+        }
+        setCriteria(newCriteria)
+        setSelectedPos(0)
+        setMsg(`Pattern "${pat.name}" loaded`)
+      } else {
+        setMsg(data?.error || 'Failed to load candle data for pattern')
+      }
+    }
+  }
+
+  // Delete a saved pattern
+  const deleteSavedPattern = async (pat) => {
+    const res = await apiPost('/api/pattern/delete', { id: pat.id })
+    if (res?.ok) {
+      setSavedPatterns(prev => prev.filter(p => p.id !== pat.id))
+    }
+  }
+
+  // Run pattern match
+  const runMatch = async () => {
+    if (!patternData) { setMsg('Load a candle first'); return }
+
+    const criteriaArr = buildCriteriaArray()
 
     if (criteriaArr.length === 0) {
       setMsg('Set at least one feature criterion')
@@ -120,6 +475,7 @@ export default function ScenarioTab({ tf }) {
       forward_candles: forwardCandles,
       exclude_ts: parseInt(metaTs, 10),
       include_whales: includeWhales,
+      include_forward: true,
     })
     setMatching(false)
     if (!res || res.error) {
@@ -139,10 +495,20 @@ export default function ScenarioTab({ tf }) {
       } else {
         const candle = getCandleAtOffset(offset)
         const val = candle?.[feat]
-        pos[feat] = {
-          enabled: true,
-          value: typeof val === 'number' ? val : (val || 0),
-          tolerance: typeof val === 'number' && !Number.isInteger(val) ? Math.abs(val * 0.1) : 0,
+        if (BINARY_FEATURES.has(feat)) {
+          pos[feat] = {
+            enabled: true,
+            op: 'bool',
+            value: val ? 1 : 0,
+            tolerance: 0,
+          }
+        } else {
+          pos[feat] = {
+            enabled: true,
+            op: '=',
+            value: typeof val === 'number' ? val : (val || 0),
+            tolerance: typeof val === 'number' && !Number.isInteger(val) ? Math.abs(val * 0.1) : 0,
+          }
         }
       }
       return { ...prev, [offset]: pos }
@@ -157,23 +523,28 @@ export default function ScenarioTab({ tf }) {
     })
   }
 
+  // Pattern positions are only the last `lookback` candles from before[]
+  const patternCount = patternData ? Math.min(lookback, patternData.before.length) : 0
+
   const getCandleAtOffset = (offset) => {
     if (!patternData) return null
     if (offset === 0) return patternData.meta
+    // offset is negative, e.g. -3, -2, -1
+    // map to before[] index: before has extra context + pattern candles
     const idx = patternData.before.length + offset
     return patternData.before[idx] ?? null
   }
 
-  // All positions in the pattern
+  // Only lookback positions for criteria (not context candles)
   const positions = useMemo(() => {
     if (!patternData) return []
     const pos = []
-    for (let i = 0; i < patternData.before.length; i++) {
-      pos.push(-(patternData.before.length - i))
+    for (let i = 0; i < patternCount; i++) {
+      pos.push(-(patternCount - i))
     }
     pos.push(0)
     return pos
-  }, [patternData])
+  }, [patternData, patternCount])
 
   const activeCriteriaCount = useMemo(() => {
     let count = 0
@@ -225,87 +596,147 @@ export default function ScenarioTab({ tf }) {
             disabled={matching || !patternData || activeCriteriaCount === 0}>
             {matching ? 'Matching...' : `Match (${activeCriteriaCount} criteria)`}
           </button>
+          <button className="stab-btn stab-btn--primary" onClick={() => setShowSaveDialog(true)}
+            disabled={!patternData || activeCriteriaCount === 0}>Save</button>
+          <button className="stab-btn stab-btn--primary" onClick={openLoadDialog}>Load</button>
+          <button className="stab-btn stab-btn--primary" onClick={() => setShowDiscovery(true)}>Discover</button>
         </div>
       </div>
 
+      {/* Save Pattern Dialog */}
+      {showSaveDialog && (
+        <div className="pm-dialog-overlay" onClick={() => setShowSaveDialog(false)}>
+          <div className="pm-dialog" onClick={e => e.stopPropagation()}>
+            <h3>SAVE PATTERN</h3>
+            <label className="pm-label">
+              <span>Name</span>
+              <input type="text" value={saveName} onChange={e => setSaveName(e.target.value)}
+                className="pm-input pm-input--wide" placeholder="Pattern name..." autoFocus />
+            </label>
+            <label className="pm-label" style={{ marginTop: 8 }}>
+              <span>Description</span>
+              <input type="text" value={saveDesc} onChange={e => setSaveDesc(e.target.value)}
+                className="pm-input pm-input--wide" placeholder="Optional description..." />
+            </label>
+            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+              <button className="stab-btn stab-btn--accent" onClick={saveCurrentPattern}>Save</button>
+              <button className="stab-btn stab-btn--primary" onClick={() => setShowSaveDialog(false)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Load Pattern Dialog */}
+      {showLoadDialog && (
+        <div className="pm-dialog-overlay" onClick={() => setShowLoadDialog(false)}>
+          <div className="pm-dialog pm-dialog--wide" onClick={e => e.stopPropagation()}>
+            <h3>LOAD PATTERN</h3>
+            {loadingPatterns ? (
+              <div style={{ color: 'var(--text-dim)', padding: 12 }}>Loading...</div>
+            ) : savedPatterns.length === 0 ? (
+              <div style={{ color: 'var(--text-dim)', padding: 12 }}>No saved patterns</div>
+            ) : (
+              <div className="pm-pattern-list">
+                {savedPatterns.map(pat => (
+                  <div key={pat.id} className="pm-pattern-item">
+                    <div className="pm-pattern-info">
+                      <span className="pm-pattern-name">{pat.name}</span>
+                      <span className="pm-pattern-meta">
+                        {pat.tf} | LB:{pat.lookback} | {pat.criteria?.length || 0} pos
+                        {pat.last_match_count != null && ` | ${pat.last_match_count} matches`}
+                        {pat.last_match_win_rate != null && ` (WR: ${pat.last_match_win_rate.toFixed(1)}%)`}
+                      </span>
+                      {pat.description && <span className="pm-pattern-desc">{pat.description}</span>}
+                    </div>
+                    <div className="pm-pattern-actions">
+                      <button className="stab-btn stab-btn--accent" onClick={() => loadSavedPattern(pat)}>Load</button>
+                      <button className="stab-btn stab-btn--red" onClick={() => deleteSavedPattern(pat)}>Del</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <button className="stab-btn stab-btn--primary" onClick={() => setShowLoadDialog(false)}
+              style={{ marginTop: 12 }}>Close</button>
+          </div>
+        </div>
+      )}
+
+      {/* Live Signals */}
+      {signals?.length > 0 && (
+        <div className="pm-signals">
+          <h3>LIVE SIGNALS ({signals.length})</h3>
+          <div className="pm-signal-list">
+            {signals.map(s => (
+              <div key={s.id} className="pm-signal-item">
+                <span className="pm-signal-name">{s.pattern_name}</span>
+                <span className={`pm-signal-dir ${s.direction_bias === 'LONG' ? 'up' : s.direction_bias === 'SHORT' ? 'down' : ''}`}>
+                  {s.direction_bias || 'NEUTRAL'}
+                </span>
+                {s.match_score != null && (
+                  <span className={`pm-score ${s.match_score >= 80 ? 'high' : s.match_score >= 50 ? 'mid' : 'low'}`}>
+                    {s.match_score.toFixed(0)}%
+                  </span>
+                )}
+                <span className="pm-signal-price">${s.price_at_signal?.toFixed(1)}</span>
+                <span className="pm-signal-tf">{s.tf}</span>
+                <span className="pm-signal-time">{fmtTs(s.match_ts)?.slice(11, 16)}</span>
+                <button className="stab-btn stab-btn--red" style={{ padding: '2px 6px', fontSize: '9px' }}
+                  onClick={() => dismissSignal(s.id)}>X</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {patternData && (
         <div className="pm-body">
-          {/* Pattern sequence bar */}
-          <div className="pm-sequence">
+          {/* Candle Slots */}
+          <div className="pm-slots">
             {positions.map(offset => {
               const candle = getCandleAtOffset(offset)
-              const isSelected = selectedPos === offset
-              const criteriaCount = Object.values(criteria[offset] || {}).filter(s => s.enabled).length
               const isMeta = offset === 0
+              const cc = Object.values(criteria[offset] || {}).filter(s => s.enabled).length
               return (
-                <div key={offset}
-                  className={`pm-candle-slot ${isSelected ? 'selected' : ''} ${isMeta ? 'meta' : ''}`}
-                  onClick={() => setSelectedPos(offset)}>
-                  <div className="pm-slot-label">{isMeta ? 'META' : `${offset}`}</div>
-                  <div className={`pm-slot-bar ${candle?.is_bullish ? 'bull' : 'bear'}`}>
-                    <span className="pm-slot-price">{candle?.close?.toFixed(0)}</span>
-                  </div>
-                  <div className="pm-slot-ts">{fmtTs(candle?.timestamp).slice(11, 19)}</div>
-                  {criteriaCount > 0 && (
-                    <div className="pm-slot-badge">{criteriaCount}</div>
-                  )}
-                </div>
+                <CandleSlot
+                  key={offset}
+                  candle={candle}
+                  label={isMeta ? 'META' : String(offset)}
+                  selected={selectedPos === offset}
+                  isMeta={isMeta}
+                  criteriaCount={cc}
+                  onClick={() => setSelectedPos(offset)}
+                />
               )
             })}
           </div>
 
-          {/* Criteria editor for selected position */}
+          {/* Position selector badges */}
+          <div className="pm-pos-bar">
+            {positions.map(offset => {
+              const criteriaCount = Object.values(criteria[offset] || {}).filter(s => s.enabled).length
+              const isMeta = offset === 0
+              return (
+                <button key={offset}
+                  className={`pm-pos-btn ${selectedPos === offset ? 'selected' : ''} ${isMeta ? 'meta' : ''}`}
+                  onClick={() => setSelectedPos(offset)}>
+                  {isMeta ? 'META' : offset}
+                  {criteriaCount > 0 && <span className="pm-pos-badge">{criteriaCount}</span>}
+                </button>
+              )
+            })}
+          </div>
+
+          {/* Smart Criteria Editor for selected position */}
           {selectedPos !== null && (
-            <div className="pm-criteria">
-              <h3>
-                CRITERIA — Position {selectedPos === 0 ? 'META (0)' : selectedPos}
-                <span className="pm-criteria-sub">
-                  {fmtTs(getCandleAtOffset(selectedPos)?.timestamp)}
-                </span>
-              </h3>
-              <div className="pm-criteria-grid">
-                {GROUPS.map(group => {
-                  const relevantFeats = group.features.filter(f => MATCHABLE_FEATURES.includes(f))
-                  if (relevantFeats.length === 0) return null
-                  const candle = getCandleAtOffset(selectedPos)
-                  return (
-                    <div key={group.id} className="pm-feat-group">
-                      <div className="pm-group-header" style={{ borderColor: group.color }}>
-                        {group.name}
-                      </div>
-                      {relevantFeats.map(feat => {
-                        const val = candle?.[feat]
-                        const spec = criteria[selectedPos]?.[feat]
-                        const isActive = spec?.enabled
-                        return (
-                          <div key={feat} className={`pm-feat-row ${isActive ? 'active' : ''}`}>
-                            <label className="pm-feat-toggle">
-                              <input type="checkbox" checked={!!isActive}
-                                onChange={() => toggleFeature(selectedPos, feat)} />
-                              <span className="pm-feat-name">{feat}</span>
-                            </label>
-                            <span className="pm-feat-val" style={{ color: group.color }}>
-                              {fmt(val, feat)}
-                            </span>
-                            {isActive && (
-                              <div className="pm-feat-tol">
-                                <input type="number" step="any" value={spec.value}
-                                  onChange={e => updateCriterion(selectedPos, feat, 'value', +e.target.value)}
-                                  className="pm-tol-input" />
-                                <span className="pm-tol-pm">&plusmn;</span>
-                                <input type="number" step="any" min={0} value={spec.tolerance}
-                                  onChange={e => updateCriterion(selectedPos, feat, 'tolerance', Math.max(0, +e.target.value))}
-                                  className="pm-tol-input" />
-                              </div>
-                            )}
-                          </div>
-                        )
-                      })}
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
+            <SmartCriteriaEditor
+              selectedPos={selectedPos}
+              criteria={criteria}
+              getCandleAtOffset={getCandleAtOffset}
+              toggleFeature={toggleFeature}
+              updateCriterion={updateCriterion}
+              fmtTs={fmtTs}
+            />
           )}
         </div>
       )}
@@ -355,12 +786,18 @@ export default function ScenarioTab({ tf }) {
             </div>
           </div>
 
+          {/* Outcome Overlay Chart */}
+          {results.matches.some(m => m.after?.length > 0) && (
+            <OutcomeOverlay matches={results.matches} />
+          )}
+
           {/* Match list */}
           <div className="pm-match-list">
             <table className="pm-match-table">
               <thead>
                 <tr>
                   <th>#</th>
+                  <th>Score</th>
                   <th>Timestamp</th>
                   <th>Price</th>
                   <th>Dir</th>
@@ -376,10 +813,12 @@ export default function ScenarioTab({ tf }) {
                 {results.matches.map((m, i) => {
                   const o = m.outcome
                   const expanded = expandedMatch === i
+                  const scoreClass = m.score >= 80 ? 'high' : m.score >= 50 ? 'mid' : 'low'
                   return [
                     <tr key={i} className={`pm-match-row ${expanded ? 'expanded' : ''}`}
                       onClick={() => setExpandedMatch(expanded ? null : i)}>
                       <td>{i + 1}</td>
+                      <td><span className={`pm-score ${scoreClass}`}>{m.score != null ? `${m.score}%` : '—'}</span></td>
                       <td className="pm-ts-cell">{fmtTs(m.meta.timestamp)}</td>
                       <td>{m.meta.close?.toFixed(1)}</td>
                       <td className={o.direction === 'LONG' ? 'up' : 'down'}>
@@ -408,7 +847,7 @@ export default function ScenarioTab({ tf }) {
                     </tr>,
                     expanded && (
                       <tr key={`${i}-detail`} className="pm-match-detail-row">
-                        <td colSpan={includeWhales ? 10 : 9}>
+                        <td colSpan={includeWhales ? 11 : 10}>
                           <MatchDetail match={m} includeWhales={includeWhales} />
                         </td>
                       </tr>
@@ -420,6 +859,277 @@ export default function ScenarioTab({ tf }) {
           </div>
         </div>
       )}
+
+      {/* Discovery Dialog */}
+      {showDiscovery && (
+        <div className="pm-dialog-overlay" onClick={() => setShowDiscovery(false)}>
+          <div className="pm-dialog pm-dialog--wide" onClick={e => e.stopPropagation()}>
+            <h3>AUTO-DISCOVERY</h3>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+              <button className="stab-btn stab-btn--accent" onClick={runDiscovery}
+                disabled={discovering}>
+                {discovering ? 'Scanning...' : 'Run Discovery'}
+              </button>
+              <button className="stab-btn stab-btn--primary"
+                onClick={() => setShowDiscovery(false)}>Close</button>
+            </div>
+            {discoveries.length > 0 && (
+              <div className="pm-discoveries">
+                {discoveries.map((disc, i) => (
+                  <div key={i} className="pm-disc-card">
+                    <div className="pm-disc-header">
+                      <span className={`pm-disc-dir ${disc.direction === 'LONG' ? 'up' : disc.direction === 'SHORT' ? 'down' : ''}`}>
+                        {disc.direction}
+                      </span>
+                      <span className="pm-disc-wr">WR: {disc.win_rate}%</span>
+                      <span className="pm-disc-size">n={disc.size}</span>
+                      <span className="pm-disc-pnl" style={{ color: disc.avg_pnl >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                        Avg: {disc.avg_pnl.toFixed(3)}%
+                      </span>
+                    </div>
+                    <div className="pm-disc-features">
+                      {disc.top_features?.map((f, j) => (
+                        <span key={j} className="pm-disc-feat">{f.name}: {typeof f.value === 'number' ? f.value.toFixed(3) : f.value}</span>
+                      ))}
+                    </div>
+                    <div className="pm-disc-stats">
+                      <span>Edge: {disc.edge_quality.toFixed(0)}</span>
+                      <span>Long: {disc.long_pct}%</span>
+                      <span>Criteria: {disc.suggested_criteria?.length || 0}</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
+                      <button className="stab-btn stab-btn--accent" style={{ fontSize: '9px', padding: '3px 8px' }}
+                        onClick={() => useDiscovery(disc)}>Use as Pattern</button>
+                      <button className="stab-btn stab-btn--primary" style={{ fontSize: '9px', padding: '3px 8px' }}
+                        onClick={() => saveDiscovery(disc)}>Save</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ── Inline operator controls for a single active criterion ─── */
+function CriteriaControls({ selectedPos, feat, spec, updateCriterion }) {
+  const op = spec?.op || '='
+  return (
+    <div className="pm-feat-controls">
+      <select className="pm-op-select" value={op}
+        onChange={e => updateCriterion(selectedPos, feat, 'op', e.target.value)}>
+        {OPERATOR_OPTIONS.map(o => (
+          <option key={o.value} value={o.value}>{o.label}</option>
+        ))}
+      </select>
+      {op === 'bool' && (
+        <select className="pm-bool-select" value={spec.value ? 1 : 0}
+          onChange={e => updateCriterion(selectedPos, feat, 'value', +e.target.value)}>
+          <option value={1}>1 (true)</option>
+          <option value={0}>0 (false)</option>
+        </select>
+      )}
+      {op === '=' && (
+        <div className="pm-feat-tol">
+          <input type="number" step="any" value={spec.value}
+            onChange={e => updateCriterion(selectedPos, feat, 'value', +e.target.value)}
+            className="pm-tol-input" />
+          <span className="pm-tol-pm">&plusmn;</span>
+          <input type="number" step="any" min={0} value={spec.tolerance}
+            onChange={e => updateCriterion(selectedPos, feat, 'tolerance', Math.max(0, +e.target.value))}
+            className="pm-tol-input" />
+        </div>
+      )}
+      {op === 'range' && (
+        <div className="pm-feat-tol">
+          <input type="number" step="any" value={spec.min ?? 0}
+            onChange={e => updateCriterion(selectedPos, feat, 'min', +e.target.value)}
+            className="pm-tol-input" placeholder="min" />
+          <span className="pm-tol-pm">&mdash;</span>
+          <input type="number" step="any" value={spec.max ?? 0}
+            onChange={e => updateCriterion(selectedPos, feat, 'max', +e.target.value)}
+            className="pm-tol-input" placeholder="max" />
+        </div>
+      )}
+      {['>', '<', '>=', '<='].includes(op) && (
+        <input type="number" step="any" value={spec.value}
+          onChange={e => updateCriterion(selectedPos, feat, 'value', +e.target.value)}
+          className="pm-tol-input" />
+      )}
+    </div>
+  )
+}
+
+/* ── Smart Criteria Editor: Quick Picks + Active Panel + More ─── */
+function SmartCriteriaEditor({ selectedPos, criteria, getCandleAtOffset, toggleFeature, updateCriterion, fmtTs }) {
+  const [showMore, setShowMore] = useState(false)
+  const [showAdvanced, setShowAdvanced] = useState(false)
+  const [search, setSearch] = useState('')
+
+  const candle = getCandleAtOffset(selectedPos)
+  const posCriteria = criteria[selectedPos] || {}
+
+  // All active features for this position
+  const activeFeats = useMemo(() =>
+    Object.entries(posCriteria).filter(([, spec]) => spec.enabled).map(([feat]) => feat),
+    [posCriteria]
+  )
+
+  // Search filter for More section
+  const searchLower = search.toLowerCase()
+  const matchesSearch = (feat) => {
+    if (!search) return true
+    const meta = FEATURE_META[feat]
+    return feat.toLowerCase().includes(searchLower) ||
+      (meta?.desc || '').toLowerCase().includes(searchLower)
+  }
+
+  // Group tier 2+3 by their original group for the More section
+  const moreGroups = useMemo(() => {
+    const groups = []
+    for (const g of GROUPS) {
+      const t2 = g.features.filter(f => TIER2_FEATURES.includes(f) && MATCHABLE_FEATURES.includes(f) && matchesSearch(f))
+      const t3 = g.features.filter(f => TIER3_FEATURES.includes(f) && MATCHABLE_FEATURES.includes(f) && matchesSearch(f))
+      if (t2.length > 0 || t3.length > 0) {
+        groups.push({ ...g, tier2: t2, tier3: t3 })
+      }
+    }
+    return groups
+  }, [search])
+
+  return (
+    <div className="pm-criteria">
+      <h3>
+        CRITERIA — Position {selectedPos === 0 ? 'META (0)' : selectedPos}
+        <span className="pm-criteria-sub">
+          {fmtTs(candle?.timestamp)}
+        </span>
+      </h3>
+
+      {/* A) Quick Picks Bar */}
+      <div className="pm-quick-picks">
+        {TIER1_FEATURES.filter(f => MATCHABLE_FEATURES.includes(f)).map(feat => {
+          const val = candle?.[feat]
+          const isActive = posCriteria[feat]?.enabled
+          const meta = FEATURE_META[feat]
+          const group = featureToGroup[feat]
+          return (
+            <button
+              key={feat}
+              className={`pm-qp-btn ${isActive ? 'active' : ''}`}
+              title={meta?.desc || feat}
+              onClick={() => toggleFeature(selectedPos, feat)}
+            >
+              <span className="pm-qp-name">{feat}</span>
+              <span className="pm-qp-val" style={{ color: group?.color }}>{fmt(val, feat)}</span>
+            </button>
+          )
+        })}
+      </div>
+
+      {/* B) Active Criteria Panel */}
+      {activeFeats.length > 0 && (
+        <div className="pm-active-criteria">
+          <div className="pm-active-header">ACTIVE ({activeFeats.length})</div>
+          {activeFeats.map(feat => {
+            const spec = posCriteria[feat]
+            const val = candle?.[feat]
+            const meta = FEATURE_META[feat]
+            const group = featureToGroup[feat]
+            return (
+              <div key={feat} className="pm-active-row">
+                <span className="pm-active-name" style={{ color: group?.color }}>{feat}</span>
+                <span className="pm-active-desc">{meta?.desc || ''}</span>
+                <span className="pm-active-val">{fmt(val, feat)}</span>
+                <CriteriaControls
+                  selectedPos={selectedPos}
+                  feat={feat}
+                  spec={spec}
+                  updateCriterion={updateCriterion}
+                />
+                <button className="pm-active-remove" onClick={() => toggleFeature(selectedPos, feat)}
+                  title="Remove criterion">&times;</button>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* C) More Features — Expandable */}
+      <div className="pm-more-section">
+        <button className="pm-more-toggle" onClick={() => setShowMore(!showMore)}>
+          {showMore ? '- Hide Features' : '+ More Features'}
+          <span className="pm-more-count">({TIER2_FEATURES.length + TIER3_FEATURES.length})</span>
+        </button>
+
+        {showMore && (
+          <div className="pm-more-content">
+            <input
+              type="text"
+              className="pm-search-input"
+              placeholder="Search features..."
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+            />
+
+            {moreGroups.map(g => (
+              <div key={g.id} className="pm-tier-group">
+                <div className="pm-group-header" style={{ borderColor: g.color }}>{g.name}</div>
+
+                {/* Tier 2 features */}
+                {g.tier2.map(feat => {
+                  const isActive = posCriteria[feat]?.enabled
+                  const val = candle?.[feat]
+                  const meta = FEATURE_META[feat]
+                  return (
+                    <div key={feat} className={`pm-feat-row ${isActive ? 'active' : ''}`}>
+                      <label className="pm-feat-toggle">
+                        <input type="checkbox" checked={!!isActive}
+                          onChange={() => toggleFeature(selectedPos, feat)} />
+                        <span className="pm-feat-name">{feat}</span>
+                      </label>
+                      <span className="pm-feat-desc-inline" title={meta?.desc}>{meta?.desc}</span>
+                      <span className="pm-feat-val" style={{ color: g.color }}>{fmt(val, feat)}</span>
+                    </div>
+                  )
+                })}
+
+                {/* Tier 3: Advanced accordion within group */}
+                {g.tier3.length > 0 && (
+                  <>
+                    {!showAdvanced && g.tier3.length > 0 && g.tier2.length > 0 && null}
+                    {(showAdvanced || search) && g.tier3.map(feat => {
+                      const isActive = posCriteria[feat]?.enabled
+                      const val = candle?.[feat]
+                      const meta = FEATURE_META[feat]
+                      return (
+                        <div key={feat} className={`pm-feat-row pm-feat-row--adv ${isActive ? 'active' : ''}`}>
+                          <label className="pm-feat-toggle">
+                            <input type="checkbox" checked={!!isActive}
+                              onChange={() => toggleFeature(selectedPos, feat)} />
+                            <span className="pm-feat-name">{feat}</span>
+                          </label>
+                          <span className="pm-feat-desc-inline" title={meta?.desc}>{meta?.desc}</span>
+                          <span className="pm-feat-val" style={{ color: g.color }}>{fmt(val, feat)}</span>
+                        </div>
+                      )
+                    })}
+                  </>
+                )}
+              </div>
+            ))}
+
+            {!search && (
+              <button className="pm-adv-toggle" onClick={() => setShowAdvanced(!showAdvanced)}>
+                {showAdvanced ? '- Hide Advanced' : '+ Show Advanced'} ({TIER3_FEATURES.length})
+              </button>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
