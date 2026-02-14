@@ -16,7 +16,7 @@ export function fmtCompact(n) {
 }
 
 export function fmtTime(ts) {
-  return new Date(ts).toLocaleTimeString('en-US', { hour12: false })
+  return new Date(ts).toLocaleTimeString('en-US', { hour12: false, timeZone: 'Europe/Berlin' })
 }
 
 export function fmtUptime(s) {

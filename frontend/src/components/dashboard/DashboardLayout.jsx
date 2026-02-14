@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { api, apiPost } from '../../api/client'
 import usePolling from '../../hooks/usePolling'
 import DashboardHeader from './DashboardHeader'
@@ -17,9 +17,40 @@ import FeatureTab from './FeatureTab'
 import ThreadTab from './ThreadTab'
 import './DashboardLayout.css'
 
+const VALID_TABS = ['overview', 'settings', 'scenarios', 'features', 'threads']
+
+function getInitialTab() {
+  const hash = window.location.hash.replace('#', '')
+  return VALID_TABS.includes(hash) ? hash : 'overview'
+}
+
 export default function DashboardLayout() {
-  const [tf, setTf] = useState('1m')
-  const [activeTab, setActiveTab] = useState('overview')
+  const [tf, setTf] = useState(() => sessionStorage.getItem('edge_tf') || '1m')
+  const [activeTab, setActiveTab] = useState(getInitialTab)
+  const [patternTs, setPatternTs] = useState(null)
+
+  // Sync tab to URL hash
+  useEffect(() => {
+    window.location.hash = activeTab
+  }, [activeTab])
+
+  // Listen for hash changes (browser back/forward)
+  useEffect(() => {
+    const onHash = () => {
+      const tab = window.location.hash.replace('#', '')
+      if (VALID_TABS.includes(tab)) setActiveTab(tab)
+    }
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
+
+  // Persist tf
+  useEffect(() => { sessionStorage.setItem('edge_tf', tf) }, [tf])
+
+  const goToPattern = (ts) => {
+    setPatternTs(ts)
+    setActiveTab('scenarios')
+  }
 
   const fetchTicker = useCallback(() => api('/api/ticker'), [])
   const fetchSparkline = useCallback(() => api('/api/sparkline'), [])
@@ -33,6 +64,7 @@ export default function DashboardLayout() {
   const fetchSystem = useCallback(() => api('/api/system'), [])
   const fetchStats = useCallback(() => api('/api/stats'), [])
   const fetchTimeframes = useCallback(() => api('/api/timeframes'), [])
+  const fetchSignals = useCallback(() => api('/api/signals'), [])
 
   const { data: ticker } = usePolling(fetchTicker, 1000)
   const { data: sparkline } = usePolling(fetchSparkline, 2000)
@@ -46,6 +78,7 @@ export default function DashboardLayout() {
   const { data: system } = usePolling(fetchSystem, 5000)
   const { data: stats } = usePolling(fetchStats, 3000)
   const { data: timeframes } = usePolling(fetchTimeframes, 10000)
+  const { data: liveSignals } = usePolling(fetchSignals, 10000)
 
   const handleTfChange = async (newTf) => {
     setTf(newTf)
@@ -63,6 +96,7 @@ export default function DashboardLayout() {
         onTfChange={handleTfChange}
         activeTab={activeTab}
         onTabChange={setActiveTab}
+        signalCount={liveSignals?.signals?.length || 0}
       />
       {activeTab === 'overview' && (
         <>
@@ -78,8 +112,8 @@ export default function DashboardLayout() {
         </>
       )}
       {activeTab === 'settings' && <SettingsTab tf={tf} />}
-      {activeTab === 'scenarios' && <ScenarioTab tf={tf} />}
-      {activeTab === 'features' && <FeatureTab tf={tf} />}
+      {activeTab === 'scenarios' && <ScenarioTab tf={tf} initialTs={patternTs} onTsClear={() => setPatternTs(null)} signals={liveSignals?.signals} />}
+      {activeTab === 'features' && <FeatureTab tf={tf} onUseAsPattern={goToPattern} />}
       {activeTab === 'threads' && <ThreadTab />}
     </div>
   )

@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { api, apiPost } from '../../api/client'
-import GROUPS, { FEATURE_META, TIER1_FEATURES, TIER2_FEATURES, TIER3_FEATURES, featureToGroup } from '../../lib/featureGroups'
+import GROUPS, { FEATURE_META, TIER1_FEATURES, TIER2_FEATURES, TIER3_FEATURES, featureToGroup, CONTEXT_LABELS } from '../../lib/featureGroups'
 import OutcomeOverlay from './OutcomeOverlay'
+import ChatPanel from './ChatPanel'
 import './ScenarioTab.css'
 
 // Features suitable for pattern criteria (exclude raw OHLCV, text columns)
@@ -131,31 +132,75 @@ function CandleSlot({ candle, label, selected, isMeta, criteriaCount, onClick })
     drawBracket(annotX, bTop, bTop + bH, bodyCol, `${bodyPct.toFixed(1)}%`)
     drawBracket(annotX, bTop + bH, toY(c.low), 'rgba(0,240,255,0.7)', `${lowerPct.toFixed(1)}%`)
 
-    // OHLC prices (left)
+    // OHLC prices (left) — always show all 4 values
     ctx.font = '9px monospace'
     ctx.textAlign = 'right'
-    ctx.fillStyle = accent
-    ctx.fillText(`H ${c.high.toFixed(0)}`, priceX, toY(c.high) + 3)
-    ctx.fillText(`L ${c.low.toFixed(0)}`, priceX, toY(c.low) + 3)
     const oY = toY(c.open), cY = toY(c.close)
     const hY = toY(c.high), lY = toY(c.low)
-    ctx.fillStyle = bodyCol
-    if (Math.abs(oY - hY) > 14 && Math.abs(oY - lY) > 14)
-      ctx.fillText(`O ${c.open.toFixed(0)}`, priceX, oY + 3)
-    if (Math.abs(cY - hY) > 14 && Math.abs(cY - lY) > 14 && Math.abs(cY - oY) > 14)
-      ctx.fillText(`C ${c.close.toFixed(0)}`, priceX, cY + 3)
+
+    // Collect all labels, then deduplicate positions
+    const labels = [
+      { text: `H ${c.high.toFixed(0)}`, y: hY, color: accent },
+      { text: `O ${c.open.toFixed(0)}`, y: oY, color: bodyCol },
+      { text: `C ${c.close.toFixed(0)}`, y: cY, color: bodyCol },
+      { text: `L ${c.low.toFixed(0)}`, y: lY, color: accent },
+    ]
+    // Push apart overlapping labels (min 11px gap)
+    labels.sort((a, b) => a.y - b.y)
+    for (let i = 1; i < labels.length; i++) {
+      if (labels[i].y - labels[i - 1].y < 11) {
+        labels[i].y = labels[i - 1].y + 11
+      }
+    }
+    for (const lb of labels) {
+      ctx.fillStyle = lb.color
+      ctx.fillText(lb.text, priceX, lb.y + 3)
+    }
   }, [candle, selected, isMeta])
 
   if (!candle) return null
 
-  const isBull = candle.close >= candle.open
-  const events = []
-  if (candle.bos_bull) events.push({ l: 'BOS+', c: '#00ff88' })
-  if (candle.bos_bear) events.push({ l: 'BOS-', c: '#ff3355' })
-  if (candle.is_seeker_kill) events.push({ l: 'KILL', c: '#ff00ff' })
-  if (candle.bull_div) events.push({ l: 'DIV+', c: '#44ffaa' })
-  if (candle.bear_div) events.push({ l: 'DIV-', c: '#aa44ff' })
-  if (candle.choch) events.push({ l: 'CHoCH', c: '#ffd700' })
+  const c = candle
+  const isBull = c.close >= c.open
+
+  // Build info lines from candle analyzer data
+  const tags = []
+
+  // Structure events
+  if (c.bos_bull) tags.push({ l: 'BOS BULL', c: '#00ff88' })
+  if (c.bos_bear) tags.push({ l: 'BOS BEAR', c: '#ff3355' })
+  if (c.choch) tags.push({ l: 'CHoCH', c: '#ffd700' })
+  if (c.is_swing_high) tags.push({ l: 'SW HIGH', c: '#ff6600' })
+  if (c.is_swing_low) tags.push({ l: 'SW LOW', c: '#ff6600' })
+
+  // Divergences
+  if (c.bull_div) tags.push({ l: `DIV+ ${(c.div_strength || 0).toFixed(2)}`, c: '#44ffaa' })
+  if (c.bear_div) tags.push({ l: `DIV- ${(c.div_strength || 0).toFixed(2)}`, c: '#aa44ff' })
+
+  // Seeker
+  if (c.is_seeker_div) tags.push({ l: `SEEKER #${c.seeker_div_nr || '?'}`, c: '#44ffaa' })
+  if (c.is_seeker_kill) tags.push({ l: `KILL ×${c.killed_seeker_divs || 1}`, c: '#ff00ff' })
+
+  // Break quality (only if BOS active)
+  if ((c.bos_bull || c.bos_bear) && c.break_depth) {
+    tags.push({ l: `Depth ${c.break_depth.toFixed(2)}`, c: '#ff00ff' })
+    if (c.bos_body) tags.push({ l: 'BODY-BRK', c: '#ff00ff' })
+    if (c.swing_age) tags.push({ l: `Age ${c.swing_age}`, c: '#ff00ff' })
+  }
+
+  const vol = c.vol_vs_ma || 0
+  const delta = c.delta_pct || 0
+  const bodyPos = c.body_position
+  const bodyPosText = bodyPos >= 0.8 ? 'Close oben' :
+    bodyPos >= 0.4 ? 'Close mitte' : 'Close unten'
+
+  const fmtSwingTs = (ts) => {
+    if (!ts) return ''
+    const d = new Date(ts)
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  }
+
+  const ws = c.whale_sentiment || 0
 
   return (
     <div className={`pm-slot ${selected ? 'selected' : ''} ${isMeta ? 'meta' : ''}`}
@@ -166,35 +211,106 @@ function CandleSlot({ candle, label, selected, isMeta, criteriaCount, onClick })
         <span className={`pm-slot-dir ${isBull ? 'up' : 'down'}`}>{isBull ? '▲' : '▼'}</span>
       </div>
       <canvas ref={canvasRef} className="pm-slot-canvas" />
-      <div className="pm-slot-footer">
-        <span className="pm-slot-ts">{fmtTs(candle.timestamp)?.slice(11, 16)}</span>
-        {events.length > 0 && (
-          <span className="pm-slot-events">
-            {events.map((e, i) => <span key={i} style={{ color: e.c }}>{e.l} </span>)}
-          </span>
+      <div className="pm-slot-info">
+        {tags.length > 0 && (
+          <div className="pm-slot-tags">
+            {tags.map((t, i) => <span key={i} className="pm-slot-tag" style={{ color: t.c, borderColor: t.c }}>{t.l}</span>)}
+          </div>
         )}
+
+        {/* Swing Status */}
+        {(c.is_swing_high || c.is_swing_low) && (
+          <div className="pm-slot-metrics">
+            {c.is_swing_high ? <span style={{ color: '#ff6600' }}>ist SW High</span> : null}
+            {c.is_swing_low ? <span style={{ color: '#ff6600' }}>ist SW Low</span> : null}
+          </div>
+        )}
+
+        {/* Break Info */}
+        {(c.bos_bull || c.bos_bear) && (
+          <div className="pm-slot-metrics">
+            {c.bos_bull ? <span style={{ color: '#00ff88' }}>bricht SW High {c.broken_swing_ts ? `@${fmtSwingTs(c.broken_swing_ts)}` : ''}</span> : null}
+            {c.bos_bear ? <span style={{ color: '#ff3355' }}>bricht SW Low {c.broken_swing_ts ? `@${fmtSwingTs(c.broken_swing_ts)}` : ''}</span> : null}
+          </div>
+        )}
+
+        {/* Vol + Delta + Body */}
+        <div className="pm-slot-metrics">
+          <span style={{ color: vol > 1.5 ? '#00ff88' : '#8899aa' }}>Vol {vol.toFixed(1)}x</span>
+          <span style={{ color: delta > 30 ? '#00ff88' : delta < -30 ? '#ff3355' : '#8899aa' }}>D {delta > 0 ? '+' : ''}{delta.toFixed(0)}%</span>
+          <span>{bodyPosText}</span>
+        </div>
+
+        {/* Whale */}
+        {ws !== 0 && (
+          <div className="pm-slot-metrics">
+            <span style={{ color: ws > 0 ? '#00ff88' : '#ff3355' }}>
+              Whale {ws > 0 ? 'BULL' : 'BEAR'}
+            </span>
+          </div>
+        )}
+      </div>
+      <div className="pm-slot-footer">
+        <span className="pm-slot-ts">{fmtTs(c.timestamp)?.slice(11, 16)}</span>
       </div>
     </div>
   )
 }
 
+// Session storage helpers
+const SS_KEY = 'edge_scenario'
+function loadSession() {
+  try {
+    const raw = sessionStorage.getItem(SS_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch { return null }
+}
+function saveSession(data) {
+  try { sessionStorage.setItem(SS_KEY, JSON.stringify(data)) } catch {}
+}
+
 export default function ScenarioTab({ tf, initialTs, onTsClear, signals }) {
+  // Restore from session storage
+  const _saved = useRef(loadSession())
+
   // Meta candle selection
-  const [metaTs, setMetaTs] = useState('')
-  const [lookback, setLookback] = useState(3)
+  const [metaTs, setMetaTs] = useState(() => _saved.current?.metaTs || '')
+  const [lookback, setLookback] = useState(() => _saved.current?.lookback || 3)
   const [patternData, setPatternData] = useState(null)
   const [loading, setLoading] = useState(false)
 
   // Criteria: {[offset]: {feat: {value, tolerance, enabled}}}
-  const [criteria, setCriteria] = useState({})
-  const [selectedPos, setSelectedPos] = useState(null)
+  const [criteria, setCriteria] = useState(() => _saved.current?.criteria || {})
+  const [selectedPos, setSelectedPos] = useState(() => _saved.current?.selectedPos ?? null)
 
   // Results
   const [results, setResults] = useState(null)
   const [matching, setMatching] = useState(false)
   const [includeWhales, setIncludeWhales] = useState(false)
-  const [forwardCandles, setForwardCandles] = useState(20)
-  const [matchLimit, setMatchLimit] = useState(100)
+  const [forwardCandles, setForwardCandles] = useState(() => _saved.current?.forwardCandles || 20)
+  const [matchLimit, setMatchLimit] = useState(() => _saved.current?.matchLimit || 100)
+
+  // Persist key state to sessionStorage
+  useEffect(() => {
+    saveSession({ metaTs, lookback, criteria, selectedPos, forwardCandles, matchLimit })
+  }, [metaTs, lookback, criteria, selectedPos, forwardCandles, matchLimit])
+
+  // Auto-reload pattern data on mount if we have a saved metaTs
+  useEffect(() => {
+    if (_saved.current?.metaTs && !initialTs && !patternData) {
+      const ts = parseInt(_saved.current.metaTs, 10)
+      if (!isNaN(ts)) {
+        setLoading(true)
+        api(`/api/pattern/candles?ts=${ts}&tf=${tf}&lookback=${_saved.current.lookback || 3}&forward=5`).then(data => {
+          setLoading(false)
+          if (data && !data.error) {
+            setPatternData(data)
+            setSelectedPos(prev => prev ?? 0)
+          }
+        })
+      }
+    }
+  }, [])
 
   // Expanded match detail
   const [expandedMatch, setExpandedMatch] = useState(null)
@@ -523,6 +639,33 @@ export default function ScenarioTab({ tf, initialTs, onTsClear, signals }) {
     })
   }
 
+  // AI Chat action handler
+  const handleChatAction = (action) => {
+    const pos = selectedPos ?? 0
+    if (action.action === 'toggle') {
+      setCriteria(prev => ({
+        ...prev,
+        [pos]: {
+          ...prev[pos],
+          [action.feature]: {
+            enabled: true,
+            op: action.op,
+            value: action.value,
+            tolerance: action.tolerance || 0,
+            min: action.min,
+            max: action.max,
+          }
+        }
+      }))
+    } else if (action.action === 'remove') {
+      setCriteria(prev => {
+        const posCrit = { ...prev[pos] }
+        delete posCrit[action.feature]
+        return { ...prev, [pos]: posCrit }
+      })
+    }
+  }
+
   // Pattern positions are only the last `lookback` candles from before[]
   const patternCount = patternData ? Math.min(lookback, patternData.before.length) : 0
 
@@ -738,6 +881,16 @@ export default function ScenarioTab({ tf, initialTs, onTsClear, signals }) {
               fmtTs={fmtTs}
             />
           )}
+
+          {/* AI Chat Panel */}
+          <ChatPanel
+            metaTs={metaTs}
+            tf={tf}
+            lookback={lookback}
+            criteria={criteria}
+            getCandleAtOffset={getCandleAtOffset}
+            onAction={handleChatAction}
+          />
         </div>
       )}
 
@@ -963,10 +1116,9 @@ function CriteriaControls({ selectedPos, feat, spec, updateCriterion }) {
   )
 }
 
-/* ── Smart Criteria Editor: Quick Picks + Active Panel + More ─── */
+/* ── Smart Criteria Editor: Active Panel + Feature Catalog ─── */
 function SmartCriteriaEditor({ selectedPos, criteria, getCandleAtOffset, toggleFeature, updateCriterion, fmtTs }) {
-  const [showMore, setShowMore] = useState(false)
-  const [showAdvanced, setShowAdvanced] = useState(false)
+  const [expandedGroups, setExpandedGroups] = useState({})
   const [search, setSearch] = useState('')
 
   const candle = getCandleAtOffset(selectedPos)
@@ -978,7 +1130,7 @@ function SmartCriteriaEditor({ selectedPos, criteria, getCandleAtOffset, toggleF
     [posCriteria]
   )
 
-  // Search filter for More section
+  // Search filter
   const searchLower = search.toLowerCase()
   const matchesSearch = (feat) => {
     if (!search) return true
@@ -987,18 +1139,37 @@ function SmartCriteriaEditor({ selectedPos, criteria, getCandleAtOffset, toggleF
       (meta?.desc || '').toLowerCase().includes(searchLower)
   }
 
-  // Group tier 2+3 by their original group for the More section
-  const moreGroups = useMemo(() => {
+  // Catalog groups (exclude raw, only matchable features)
+  const catalogGroups = useMemo(() => {
     const groups = []
     for (const g of GROUPS) {
-      const t2 = g.features.filter(f => TIER2_FEATURES.includes(f) && MATCHABLE_FEATURES.includes(f) && matchesSearch(f))
-      const t3 = g.features.filter(f => TIER3_FEATURES.includes(f) && MATCHABLE_FEATURES.includes(f) && matchesSearch(f))
-      if (t2.length > 0 || t3.length > 0) {
-        groups.push({ ...g, tier2: t2, tier3: t3 })
+      if (g.id === 'raw') continue
+      const feats = g.features.filter(f =>
+        MATCHABLE_FEATURES.includes(f) && matchesSearch(f)
+      )
+      if (feats.length > 0) {
+        const activeCount = feats.filter(f => posCriteria[f]?.enabled).length
+        groups.push({ ...g, matchableFeats: feats, activeCount })
       }
     }
     return groups
-  }, [search])
+  }, [search, posCriteria])
+
+  const toggleGroup = (gid) => {
+    setExpandedGroups(prev => ({ ...prev, [gid]: !prev[gid] }))
+  }
+
+  // Auto-expand groups with matching search
+  const isExpanded = (gid) => {
+    if (search) return true
+    return !!expandedGroups[gid]
+  }
+
+  const ContextTag = ({ context }) => {
+    const info = CONTEXT_LABELS[context]
+    if (!info) return null
+    return <span className="pm-feat-ctx" style={{ color: info.color }}>[{info.label}]</span>
+  }
 
   return (
     <div className="pm-criteria">
@@ -1009,28 +1180,7 @@ function SmartCriteriaEditor({ selectedPos, criteria, getCandleAtOffset, toggleF
         </span>
       </h3>
 
-      {/* A) Quick Picks Bar */}
-      <div className="pm-quick-picks">
-        {TIER1_FEATURES.filter(f => MATCHABLE_FEATURES.includes(f)).map(feat => {
-          const val = candle?.[feat]
-          const isActive = posCriteria[feat]?.enabled
-          const meta = FEATURE_META[feat]
-          const group = featureToGroup[feat]
-          return (
-            <button
-              key={feat}
-              className={`pm-qp-btn ${isActive ? 'active' : ''}`}
-              title={meta?.desc || feat}
-              onClick={() => toggleFeature(selectedPos, feat)}
-            >
-              <span className="pm-qp-name">{feat}</span>
-              <span className="pm-qp-val" style={{ color: group?.color }}>{fmt(val, feat)}</span>
-            </button>
-          )
-        })}
-      </div>
-
-      {/* B) Active Criteria Panel */}
+      {/* A) Active Criteria Panel */}
       {activeFeats.length > 0 && (
         <div className="pm-active-criteria">
           <div className="pm-active-header">ACTIVE ({activeFeats.length})</div>
@@ -1039,9 +1189,11 @@ function SmartCriteriaEditor({ selectedPos, criteria, getCandleAtOffset, toggleF
             const val = candle?.[feat]
             const meta = FEATURE_META[feat]
             const group = featureToGroup[feat]
+            const ctxInfo = CONTEXT_LABELS[meta?.context]
             return (
               <div key={feat} className="pm-active-row">
                 <span className="pm-active-name" style={{ color: group?.color }}>{feat}</span>
+                {ctxInfo && <span className="pm-active-ctx" style={{ color: ctxInfo.color }}>[{ctxInfo.label}]</span>}
                 <span className="pm-active-desc">{meta?.desc || ''}</span>
                 <span className="pm-active-val">{fmt(val, feat)}</span>
                 <CriteriaControls
@@ -1058,29 +1210,32 @@ function SmartCriteriaEditor({ selectedPos, criteria, getCandleAtOffset, toggleF
         </div>
       )}
 
-      {/* C) More Features — Expandable */}
-      <div className="pm-more-section">
-        <button className="pm-more-toggle" onClick={() => setShowMore(!showMore)}>
-          {showMore ? '- Hide Features' : '+ More Features'}
-          <span className="pm-more-count">({TIER2_FEATURES.length + TIER3_FEATURES.length})</span>
-        </button>
+      {/* B) Feature Catalog */}
+      <div className="pm-catalog">
+        <input
+          type="text"
+          className="pm-search-input"
+          placeholder="Features suchen..."
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+        />
 
-        {showMore && (
-          <div className="pm-more-content">
-            <input
-              type="text"
-              className="pm-search-input"
-              placeholder="Search features..."
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-            />
+        {catalogGroups.map(g => (
+          <div key={g.id} className="pm-catalog-group">
+            <button
+              className={`pm-catalog-group-header ${isExpanded(g.id) ? 'expanded' : ''}`}
+              style={{ borderLeftColor: g.color }}
+              onClick={() => toggleGroup(g.id)}
+            >
+              <span className="pm-catalog-group-name" style={{ color: g.color }}>{g.name}</span>
+              <span className="pm-catalog-group-count">{g.matchableFeats.length}</span>
+              {g.activeCount > 0 && <span className="pm-catalog-group-active">{g.activeCount} aktiv</span>}
+              <span className="pm-catalog-chevron">{isExpanded(g.id) ? '\u25B4' : '\u25BE'}</span>
+            </button>
 
-            {moreGroups.map(g => (
-              <div key={g.id} className="pm-tier-group">
-                <div className="pm-group-header" style={{ borderColor: g.color }}>{g.name}</div>
-
-                {/* Tier 2 features */}
-                {g.tier2.map(feat => {
+            {isExpanded(g.id) && (
+              <div className="pm-catalog-features">
+                {g.matchableFeats.map(feat => {
                   const isActive = posCriteria[feat]?.enabled
                   const val = candle?.[feat]
                   const meta = FEATURE_META[feat]
@@ -1091,44 +1246,16 @@ function SmartCriteriaEditor({ selectedPos, criteria, getCandleAtOffset, toggleF
                           onChange={() => toggleFeature(selectedPos, feat)} />
                         <span className="pm-feat-name">{feat}</span>
                       </label>
+                      <ContextTag context={meta?.context} />
                       <span className="pm-feat-desc-inline" title={meta?.desc}>{meta?.desc}</span>
                       <span className="pm-feat-val" style={{ color: g.color }}>{fmt(val, feat)}</span>
                     </div>
                   )
                 })}
-
-                {/* Tier 3: Advanced accordion within group */}
-                {g.tier3.length > 0 && (
-                  <>
-                    {!showAdvanced && g.tier3.length > 0 && g.tier2.length > 0 && null}
-                    {(showAdvanced || search) && g.tier3.map(feat => {
-                      const isActive = posCriteria[feat]?.enabled
-                      const val = candle?.[feat]
-                      const meta = FEATURE_META[feat]
-                      return (
-                        <div key={feat} className={`pm-feat-row pm-feat-row--adv ${isActive ? 'active' : ''}`}>
-                          <label className="pm-feat-toggle">
-                            <input type="checkbox" checked={!!isActive}
-                              onChange={() => toggleFeature(selectedPos, feat)} />
-                            <span className="pm-feat-name">{feat}</span>
-                          </label>
-                          <span className="pm-feat-desc-inline" title={meta?.desc}>{meta?.desc}</span>
-                          <span className="pm-feat-val" style={{ color: g.color }}>{fmt(val, feat)}</span>
-                        </div>
-                      )
-                    })}
-                  </>
-                )}
               </div>
-            ))}
-
-            {!search && (
-              <button className="pm-adv-toggle" onClick={() => setShowAdvanced(!showAdvanced)}>
-                {showAdvanced ? '- Hide Advanced' : '+ Show Advanced'} ({TIER3_FEATURES.length})
-              </button>
             )}
           </div>
-        )}
+        ))}
       </div>
     </div>
   )

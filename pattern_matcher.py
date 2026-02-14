@@ -63,26 +63,52 @@ def get_pattern_candles(meta_ts: int, lookback: int, tf: str = '1m',
 
 
 def _candle_matches_criteria(candle: dict, features: dict) -> bool:
-    """Check if a single candle matches feature criteria with tolerance."""
+    """Check if a single candle matches feature criteria with operator support.
+
+    Supported ops: '=' (default), 'bool', '>', '<', '>=', '<=', 'range'.
+    """
     for feat, spec in features.items():
         val = candle.get(feat)
         if val is None:
             return False
 
-        target = spec['value']
-        tol = spec.get('tolerance', 0)
+        op = spec.get('op', '=')
 
-        if isinstance(target, (int, float)) and isinstance(val, (int, float)):
-            if abs(val - target) > tol:
+        if op == 'bool':
+            target = int(spec.get('value', 0))
+            if int(val) != target:
                 return False
-        else:
-            if val != target:
+        elif op == '>':
+            if not (val > spec['value']):
                 return False
+        elif op == '<':
+            if not (val < spec['value']):
+                return False
+        elif op == '>=':
+            if not (val >= spec['value']):
+                return False
+        elif op == '<=':
+            if not (val <= spec['value']):
+                return False
+        elif op == 'range':
+            lo = spec.get('min', 0)
+            hi = spec.get('max', 0)
+            if not (lo <= val <= hi):
+                return False
+        else:  # op == '='
+            target = spec['value']
+            tol = spec.get('tolerance', 0)
+            if isinstance(target, (int, float)) and isinstance(val, (int, float)):
+                if abs(val - target) > tol:
+                    return False
+            else:
+                if val != target:
+                    return False
     return True
 
 
 def _build_where_clause(features: dict):
-    """Build SQL WHERE conditions from feature criteria with tolerance.
+    """Build SQL WHERE conditions from feature criteria with operator support.
 
     Returns (conditions_str, params_list).
     """
@@ -92,26 +118,120 @@ def _build_where_clause(features: dict):
     for feat, spec in features.items():
         if feat not in FEATURE_COLUMNS:
             continue
-        target = spec['value']
-        tol = spec.get('tolerance', 0)
 
-        if isinstance(target, (int, float)):
-            if tol == 0:
+        op = spec.get('op', '=')
+
+        if op == 'bool':
+            conditions.append(f'{feat} = ?')
+            params.append(int(spec.get('value', 0)))
+        elif op == '>':
+            conditions.append(f'{feat} > ?')
+            params.append(spec['value'])
+        elif op == '<':
+            conditions.append(f'{feat} < ?')
+            params.append(spec['value'])
+        elif op == '>=':
+            conditions.append(f'{feat} >= ?')
+            params.append(spec['value'])
+        elif op == '<=':
+            conditions.append(f'{feat} <= ?')
+            params.append(spec['value'])
+        elif op == 'range':
+            conditions.append(f'{feat} BETWEEN ? AND ?')
+            params.append(spec.get('min', 0))
+            params.append(spec.get('max', 0))
+        else:  # op == '='
+            target = spec['value']
+            tol = spec.get('tolerance', 0)
+            if isinstance(target, (int, float)):
+                if tol == 0:
+                    conditions.append(f'{feat} = ?')
+                    params.append(target)
+                else:
+                    conditions.append(f'{feat} BETWEEN ? AND ?')
+                    params.append(target - tol)
+                    params.append(target + tol)
+            else:
                 conditions.append(f'{feat} = ?')
                 params.append(target)
-            else:
-                conditions.append(f'{feat} BETWEEN ? AND ?')
-                params.append(target - tol)
-                params.append(target + tol)
-        else:
-            conditions.append(f'{feat} = ?')
-            params.append(target)
 
     return ' AND '.join(conditions) if conditions else '1=1', params
 
 
+def score_match(match_candles: list, reference_candles: list,
+                criteria: list) -> float:
+    """Score a match against reference candles using criteria weights.
+
+    Returns 0-100 score.
+    """
+    scores = []
+    weights = []
+
+    for crit in criteria:
+        offset = crit['offset']
+        features = crit['features']
+
+        # Get the corresponding candle from match and reference
+        if offset == 0:
+            ref_candle = reference_candles[-1] if reference_candles else None
+            match_candle = match_candles[-1] if match_candles else None
+        else:
+            ref_idx = len(reference_candles) - 1 + offset
+            match_idx = len(match_candles) - 1 + offset
+            ref_candle = reference_candles[ref_idx] if 0 <= ref_idx < len(reference_candles) else None
+            match_candle = match_candles[match_idx] if 0 <= match_idx < len(match_candles) else None
+
+        if not ref_candle or not match_candle:
+            continue
+
+        for feat, spec in features.items():
+            ref_val = ref_candle.get(feat)
+            match_val = match_candle.get(feat)
+            if ref_val is None or match_val is None:
+                continue
+
+            op = spec.get('op', '=')
+
+            if op == 'bool':
+                s = 1.0 if int(match_val) == int(ref_val) else 0.0
+                w = 1.0
+            elif op == '=':
+                tol = spec.get('tolerance', 0)
+                if tol > 0:
+                    diff = abs(float(match_val) - float(ref_val))
+                    s = max(0.0, 1.0 - diff / tol)
+                else:
+                    s = 1.0 if match_val == ref_val else 0.0
+                w = 1.5
+            elif op in ('>', '<', '>=', '<='):
+                s = 1.0  # already passed the filter
+                w = 0.5
+            elif op == 'range':
+                lo = spec.get('min', 0)
+                hi = spec.get('max', 0)
+                center = (lo + hi) / 2
+                half_range = (hi - lo) / 2 if hi != lo else 1
+                diff = abs(float(match_val) - center)
+                s = max(0.0, 1.0 - diff / half_range)
+                w = 1.0
+            else:
+                s = 1.0
+                w = 1.0
+
+            scores.append(s * w)
+            weights.append(w)
+
+    if not weights:
+        return 100.0
+
+    total_weight = sum(weights)
+    weighted_sum = sum(scores)
+    return round(weighted_sum / total_weight * 100, 1)
+
+
 def find_matches(criteria: list, tf: str = '1m', limit: int = 200,
                  forward_candles: int = 20, exclude_ts: int = None,
+                 reference_candles: list = None,
                  path: str = DEFAULT_DB_PATH) -> list:
     """Find all candle sequences matching the criteria pattern.
 
@@ -218,6 +338,15 @@ def find_matches(criteria: list, tf: str = '1m', limit: int = 200,
         })
 
     conn.close()
+
+    # Score matches if reference candles provided
+    if reference_candles and matches:
+        for m in matches:
+            match_candles = m['before'] + [m['meta']]
+            m['score'] = score_match(match_candles, reference_candles, criteria)
+        # Sort by score descending
+        matches.sort(key=lambda x: x.get('score', 0), reverse=True)
+
     return matches
 
 

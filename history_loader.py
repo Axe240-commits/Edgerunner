@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-Edgerunner History Loader — Load Binance klines for all timeframes.
+Edgerunner History Loader — Hyperliquid OHLCV + Binance Volume/Delta.
+
+OHLCV from Hyperliquid (where you trade), Volume+Delta from Binance (real delta).
 
 Usage:
-    python3 history_loader.py --days 30                        # All TFs, 30 days
-    python3 history_loader.py --days 30 --tf 1m 5m 15m         # Selected TFs
-    python3 history_loader.py --start 2024-01-01 --tf 1d       # Daily only
+    python3 history_loader.py --days 7                         # All TFs, 7 days
+    python3 history_loader.py --days 7 --tf 1m 5m 15m          # Selected TFs
+    python3 history_loader.py --start 2026-02-01 --tf 1d       # Daily only
     python3 history_loader.py --fill-gaps --tf 1m              # Fill gaps in 1m
     python3 history_loader.py --enrich-whales                  # Whale features
 """
@@ -20,26 +22,15 @@ from datetime import datetime, timezone
 from candle_analyzer import CandleAnalyzer
 from db import (init_db, insert_candles, count_candles, get_ts_range,
                 DEFAULT_DB_PATH, TIMEFRAMES)
+from hyperliquid_api import (fetch_candles as hl_fetch, fetch_binance_volume,
+                             merge_binance_volume, INTERVAL_MS)
 
-BINANCE_KLINE_URL = 'https://api.binance.com/api/v3/klines'
-MAX_CANDLES_PER_REQUEST = 1000
-RATE_LIMIT_DELAY = 0.1
+HL_MAX_PER_REQUEST = 500
+BINANCE_MAX_PER_REQUEST = 1000
+RATE_LIMIT_DELAY = 0.08
 
-# Binance BTC start: 2017-08-17
-BINANCE_BTC_START_MS = 1502928000000
-
-# Binance interval strings (identical to our TF names)
-BINANCE_INTERVALS = {
-    '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m',
-    '1h': '1h', '4h': '4h', '1d': '1d', '1w': '1w', '1M': '1M',
-}
-
-# Milliseconds per interval (for cursor advancement)
-INTERVAL_MS = {
-    '1m': 60_000, '5m': 300_000, '15m': 900_000, '30m': 1_800_000,
-    '1h': 3_600_000, '4h': 14_400_000, '1d': 86_400_000,
-    '1w': 604_800_000, '1M': 2_592_000_000,
-}
+# Hyperliquid BTC perps started ~2023-04
+HL_BTC_START_MS = 1680307200000
 
 # Swing lookback per TF (smaller TFs need more lookback)
 TF_LOOKBACK = {
@@ -48,49 +39,27 @@ TF_LOOKBACK = {
 }
 
 
-def fetch_klines(symbol, interval, start_ms, end_ms=None, limit=1000):
-    """Fetch klines from Binance for any interval."""
-    bi = BINANCE_INTERVALS.get(interval, interval)
-    params = f'symbol={symbol}&interval={bi}&startTime={start_ms}&limit={limit}'
-    if end_ms:
-        params += f'&endTime={end_ms}'
-    url = f'{BINANCE_KLINE_URL}?{params}'
-    req = urllib.request.Request(url, headers={'User-Agent': 'Edgerunner/1.0'})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read().decode())
+def _fetch_hl_batch(coin, interval, start_ms, end_ms, limit=500):
+    """Fetch one batch of candles from Hyperliquid."""
+    return hl_fetch(coin, interval, start_ms=start_ms, end_ms=end_ms, limit=limit)
 
 
-def parse_klines(raw_klines):
-    """Convert raw Binance klines to candle dicts with delta."""
-    candles = []
-    for k in raw_klines:
-        vol = float(k[5])
-        taker_buy = float(k[9])
-        candles.append({
-            'timestamp': k[0],
-            'open': float(k[1]),
-            'high': float(k[2]),
-            'low': float(k[3]),
-            'close': float(k[4]),
-            'volume': vol,
-            'delta': taker_buy * 2 - vol,
-        })
-    return candles
+def _fetch_binance_delta_batch(interval, start_ms, end_ms, limit=1000):
+    """Fetch Binance volume+delta for a time range. Returns ts->data map."""
+    try:
+        return fetch_binance_volume(interval, start_ms=start_ms, end_ms=end_ms,
+                                    limit=limit)
+    except Exception:
+        return {}
 
 
-def load_history(symbol='BTCUSDT', start_date=None, end_date=None,
+def load_history(coin='BTC', start_date=None, end_date=None,
                  days=None, timeframes=None, db_path=DEFAULT_DB_PATH,
                  fill_gaps=False):
-    """Load historical candles from Binance for multiple timeframes.
+    """Load historical candles from Hyperliquid + Binance delta.
 
-    Args:
-        symbol: Trading pair
-        start_date: Start date string (YYYY-MM-DD)
-        end_date: End date string (YYYY-MM-DD)
-        days: Load last N days
-        timeframes: List of TFs to load (default: all 9)
-        db_path: Path to SQLite database
-        fill_gaps: Fill gaps in existing DB data
+    OHLCV: Hyperliquid (matches your trading charts)
+    Volume+Delta: Binance BTCUSDT Spot (real taker buy/sell data)
     """
     init_db(db_path)
 
@@ -99,19 +68,21 @@ def load_history(symbol='BTCUSDT', start_date=None, end_date=None,
 
     now_ms = int(time.time() * 1000)
 
-    print(f'\n  Edgerunner History Loader (Multi-TF)')
+    print(f'\n  Edgerunner History Loader')
     print(f'  {"─" * 40}')
-    print(f'  Symbol:     {symbol}')
+    print(f'  OHLCV:      Hyperliquid ({coin})')
+    print(f'  Vol/Delta:  Binance (BTCUSDT Spot)')
     print(f'  Timeframes: {", ".join(timeframes)}')
     print(f'  DB:         {db_path}')
     print()
 
     for tf in timeframes:
-        if tf not in BINANCE_INTERVALS:
+        ims = INTERVAL_MS.get(tf)
+        if not ims:
             print(f'  [SKIP] Unknown interval: {tf}')
             continue
 
-        # Determine time range per TF
+        # Determine time range
         if fill_gaps:
             ts_range = get_ts_range(tf=tf, path=db_path)
             if not ts_range:
@@ -129,12 +100,11 @@ def load_history(symbol='BTCUSDT', start_date=None, end_date=None,
             print('  Specify --start, --days, or --fill-gaps')
             return
 
-        start_ms = max(start_ms, BINANCE_BTC_START_MS)
-        ims = INTERVAL_MS.get(tf, 60_000)
+        start_ms = max(start_ms, HL_BTC_START_MS)
         total_candles = (end_ms - start_ms) // ims
-        total_requests = max(1, (total_candles + MAX_CANDLES_PER_REQUEST - 1) // MAX_CANDLES_PER_REQUEST)
+        hl_requests = max(1, (total_candles + HL_MAX_PER_REQUEST - 1) // HL_MAX_PER_REQUEST)
 
-        print(f'  [{tf:>3s}] {_ms_to_date(start_ms)} -> {_ms_to_date(end_ms)}  (~{total_candles:,} candles, ~{total_requests} req)')
+        print(f'  [{tf:>3s}] {_ms_to_date(start_ms)} -> {_ms_to_date(end_ms)}  (~{total_candles:,} candles, ~{hl_requests} HL req)')
 
         lookback = TF_LOOKBACK.get(tf, 5)
         analyzer = CandleAnalyzer(swing_lookback=lookback)
@@ -142,24 +112,36 @@ def load_history(symbol='BTCUSDT', start_date=None, end_date=None,
         current_ms = start_ms
         total_loaded = 0
         total_stored = 0
-        request_count = 0
-        batch_size = 5000
+        batch_size = 5000  # analyze+store every N candles
         raw_buffer = []
         t_start = time.time()
 
         while current_ms < end_ms:
             try:
-                raw = fetch_klines(symbol, tf, current_ms, end_ms, MAX_CANDLES_PER_REQUEST)
-                if not raw:
+                # 1) Fetch OHLCV from Hyperliquid
+                #    HL returns the LAST N candles in a window, so we cap
+                #    the end to a sliding window of max 500 candles.
+                batch_end = min(end_ms, current_ms + HL_MAX_PER_REQUEST * ims)
+                candles = _fetch_hl_batch(coin, tf, current_ms, batch_end,
+                                          HL_MAX_PER_REQUEST)
+                if not candles:
                     break
 
-                candles = parse_klines(raw)
+                # 2) Fetch Binance volume+delta for same range and merge
+                bv = _fetch_binance_delta_batch(
+                    tf,
+                    start_ms=candles[0]['timestamp'],
+                    end_ms=candles[-1]['timestamp'] + ims,
+                    limit=BINANCE_MAX_PER_REQUEST,
+                )
+                if bv:
+                    merge_binance_volume(candles, bv)
+
                 raw_buffer.extend(candles)
                 total_loaded += len(candles)
-                request_count += 1
 
                 # Move cursor past last candle
-                current_ms = raw[-1][0] + ims
+                current_ms = candles[-1]['timestamp'] + ims
 
                 # Analyze and store when buffer is large enough
                 if len(raw_buffer) >= batch_size or current_ms >= end_ms:
@@ -178,8 +160,8 @@ def load_history(symbol='BTCUSDT', start_date=None, end_date=None,
                     )
                     sys.stdout.flush()
 
-                    # Keep last 200 candles for context continuity
-                    raw_buffer = raw_buffer[-200:]
+                    # Keep last 500 candles for seeker cycle continuity
+                    raw_buffer = raw_buffer[-500:]
 
                 time.sleep(RATE_LIMIT_DELAY)
 
@@ -304,8 +286,8 @@ def _ms_to_date(ms):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Edgerunner History Loader (Multi-TF)')
-    parser.add_argument('--symbol', default='BTCUSDT', help='Trading pair')
+    parser = argparse.ArgumentParser(description='Edgerunner History Loader (HL + Binance Delta)')
+    parser.add_argument('--coin', default='BTC', help='Hyperliquid coin (default: BTC)')
     parser.add_argument('--start', help='Start date (YYYY-MM-DD)')
     parser.add_argument('--end', help='End date (YYYY-MM-DD)')
     parser.add_argument('--days', type=int, help='Load last N days')
@@ -320,7 +302,7 @@ if __name__ == '__main__':
         enrich_whale_features(tf=args.tf[0] if args.tf else '1m', db_path=args.db)
     else:
         load_history(
-            symbol=args.symbol,
+            coin=args.coin,
             start_date=args.start,
             end_date=args.end,
             days=args.days,

@@ -318,7 +318,7 @@ class CandleAnalyzer:
 
     def __init__(self, swing_lookback=5, macd_fast=5, macd_slow=13, macd_signal=1,
                  rsi_period=14, atr_period=14, ema_periods=(21, 50, 200),
-                 seeker_min_wick=0.20):
+                 seeker_min_wick=0.20, vol_sma_period=10):
         self.swing_lookback = swing_lookback
         self.macd_fast = macd_fast
         self.macd_slow = macd_slow
@@ -327,6 +327,7 @@ class CandleAnalyzer:
         self.atr_period = atr_period
         self.ema_periods = ema_periods
         self.seeker_min_wick = seeker_min_wick
+        self.vol_sma_period = vol_sma_period
 
         # State for incremental mode
         self._history = []  # All candles seen so far
@@ -356,8 +357,8 @@ class CandleAnalyzer:
         rsi_vals = compute_rsi(closes, self.rsi_period)
         atr_vals = compute_atr(raw_candles, self.atr_period)
         macd_vals, macd_sig = compute_macd(closes, self.macd_fast, self.macd_slow, self.macd_signal)
-        vol_sma20 = sma(volumes, 20)
-        delta_sma20 = sma([abs(d) for d in deltas], 20)
+        vol_sma = sma(volumes, self.vol_sma_period)
+        delta_sma = sma([abs(d) for d in deltas], self.vol_sma_period)
         vwap_vals = compute_vwap(raw_candles)
 
         # Swing detection
@@ -432,9 +433,9 @@ class CandleAnalyzer:
             delta_val = c.get('delta', 0)
             vol = c['volume']
             f['delta_pct'] = delta_val / vol if vol > 0 else 0.0
-            vs = vol_sma20[i] if i < len(vol_sma20) else vol
+            vs = vol_sma[i] if i < len(vol_sma) else vol
             f['vol_vs_ma'] = vol / vs if vs > 0 else 1.0
-            ds = delta_sma20[i] if i < len(delta_sma20) else max(abs(delta_val), 1e-8)
+            ds = delta_sma[i] if i < len(delta_sma) else max(abs(delta_val), 1e-8)
             f['delta_vs_ma'] = abs(delta_val) / ds if ds > 0 else 1.0
 
             # --- Swing Structure (19-25) ---
@@ -457,6 +458,7 @@ class CandleAnalyzer:
             f['bos_wick'] = bos['bos_wick']
             f['break_depth'] = bos['break_depth'] / atr if atr > 0 else 0.0
             f['swing_age'] = bos['swing_age']
+            f['broken_swing_ts'] = bos['broken_swing_ts']
             f['swing_age_norm'] = bos['swing_age'] / 200.0
             f['breaks_highs'] = bos['breaks_highs']
             f['breaks_lows'] = bos['breaks_lows']
@@ -568,6 +570,7 @@ class CandleAnalyzer:
             'bos_body': 0, 'bos_wick': 0, 'break_depth': 0.0,
             'swing_age': 0, 'breaks_highs': 0, 'breaks_lows': 0,
             'max_age_broken': 0, 'min_age_broken': 0,
+            'broken_swing_ts': 0,
             'pair': {}, 'chain': {}, 'cluster': {},
         }
         result = [dict(empty) for _ in range(n)]
@@ -626,6 +629,7 @@ class CandleAnalyzer:
                 # Use the most recent (nearest) broken swing
                 primary = max(broken_highs_now, key=lambda s: s['index'])
                 r['swing_age'] = i - primary['index']
+                r['broken_swing_ts'] = primary['time']
                 r['break_depth'] = c['close'] - primary['price']
                 r['bos_body'] = 1 if c['open'] < primary['price'] else 0
                 r['bos_wick'] = 1 if r['bos_body'] == 0 else 0
@@ -661,6 +665,8 @@ class CandleAnalyzer:
             if broken_lows_now:
                 r['bos_bear'] = 1
                 primary = max(broken_lows_now, key=lambda s: s['index'])
+                if r['broken_swing_ts'] == 0:
+                    r['broken_swing_ts'] = primary['time']
                 if r['swing_age'] == 0:  # don't overwrite if both triggered
                     r['swing_age'] = i - primary['index']
                 r['break_depth'] = max(r['break_depth'], primary['price'] - c['close'])

@@ -29,6 +29,7 @@ CANDLE_COLUMNS_SQL = """
     choch INTEGER, dist_swing_high REAL, dist_swing_low REAL,
     -- Break Quality (9)
     bos_body INTEGER, bos_wick INTEGER, break_depth REAL, swing_age INTEGER,
+    broken_swing_ts INTEGER,
     swing_age_norm REAL, breaks_highs INTEGER, breaks_lows INTEGER,
     max_age_broken INTEGER, min_age_broken INTEGER,
     -- Paarung Brecher vs Swing (13)
@@ -75,6 +76,37 @@ CREATE TABLE IF NOT EXISTS sessions (
     user_id INTEGER REFERENCES users(id),
     created_at TEXT DEFAULT (datetime('now')),
     expires_at TEXT NOT NULL
+);
+"""
+
+PATTERN_TABLES_SQL = """
+CREATE TABLE IF NOT EXISTS saved_patterns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE NOT NULL,
+    description TEXT,
+    tf TEXT NOT NULL DEFAULT '1m',
+    lookback INTEGER NOT NULL DEFAULT 3,
+    meta_ts INTEGER,
+    criteria_json TEXT NOT NULL,
+    tags TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now')),
+    last_match_count INTEGER,
+    last_match_win_rate REAL,
+    is_active INTEGER DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS pattern_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pattern_id INTEGER REFERENCES saved_patterns(id),
+    pattern_name TEXT NOT NULL,
+    match_ts INTEGER NOT NULL,
+    match_score REAL,
+    direction_bias TEXT,
+    tf TEXT NOT NULL,
+    price_at_signal REAL,
+    created_at TEXT DEFAULT (datetime('now')),
+    dismissed INTEGER DEFAULT 0
 );
 """
 
@@ -143,6 +175,7 @@ FEATURE_COLUMNS = [
     'is_swing_high', 'is_swing_low', 'bos_bull', 'bos_bear',
     'choch', 'dist_swing_high', 'dist_swing_low',
     'bos_body', 'bos_wick', 'break_depth', 'swing_age',
+    'broken_swing_ts',
     'swing_age_norm', 'breaks_highs', 'breaks_lows',
     'max_age_broken', 'min_age_broken',
     'sw_body_ratio', 'sw_wick_ratio', 'sw_delta_pct', 'sw_vol_rel',
@@ -168,9 +201,9 @@ FEATURE_COLUMNS = [
 
 # Numeric-only features for ML (no timestamp, no TEXT columns)
 NUMERIC_FEATURES = [c for c in FEATURE_COLUMNS
-                    if c not in ('timestamp', 'sw_ohlc', 'prev_swing_features')]
+                    if c not in ('timestamp', 'sw_ohlc', 'prev_swing_features', 'broken_swing_ts')]
 
-assert len(FEATURE_COLUMNS) == 89, f'Expected 89 columns, got {len(FEATURE_COLUMNS)}'
+assert len(FEATURE_COLUMNS) == 90, f'Expected 90 columns, got {len(FEATURE_COLUMNS)}'
 
 
 def _connect(path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
@@ -235,6 +268,19 @@ def init_db(path: str = DEFAULT_DB_PATH) -> str:
     # Migrate old schema first
     _migrate_old_candles_table(conn)
 
+    # Migrate: add broken_swing_ts column if missing
+    for tf in TIMEFRAMES:
+        table = _table_name(tf)
+        try:
+            conn.execute(f"SELECT broken_swing_ts FROM {table} LIMIT 1")
+        except sqlite3.OperationalError:
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN broken_swing_ts INTEGER")
+                conn.commit()
+                print(f'  [DB] Added broken_swing_ts to {table}')
+            except sqlite3.OperationalError:
+                pass
+
     # Create all TF tables
     for tf in TIMEFRAMES:
         conn.executescript(_create_candle_table_sql(tf))
@@ -244,6 +290,9 @@ def init_db(path: str = DEFAULT_DB_PATH) -> str:
 
     # Create extra tables (scenarios, outcomes)
     conn.executescript(EXTRA_TABLES_SQL)
+
+    # Create pattern tables (saved_patterns, pattern_signals)
+    conn.executescript(PATTERN_TABLES_SQL)
 
     conn.close()
     return path
@@ -592,6 +641,154 @@ def get_candle_neighbors(ts: int, tf: str = '1m', count: int = 5,
         'before': [dict(r) for r in reversed(before)],
         'after': [dict(r) for r in after],
     }
+
+
+# ============================================================================
+# PATTERN SAVING / LOADING
+# ============================================================================
+
+def save_pattern(name: str, description: str, tf: str, lookback: int,
+                 meta_ts: int, criteria: list, tags: str = '',
+                 is_active: int = 1, path: str = DEFAULT_DB_PATH) -> int:
+    """Save or update a pattern. Returns pattern id."""
+    criteria_json = _json.dumps(criteria)
+    conn = _connect(path)
+    try:
+        conn.execute(
+            """INSERT INTO saved_patterns (name, description, tf, lookback, meta_ts,
+                 criteria_json, tags, is_active, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+               ON CONFLICT(name) DO UPDATE SET
+                 description=excluded.description, tf=excluded.tf,
+                 lookback=excluded.lookback, meta_ts=excluded.meta_ts,
+                 criteria_json=excluded.criteria_json, tags=excluded.tags,
+                 is_active=excluded.is_active, updated_at=datetime('now')""",
+            (name, description, tf, lookback, meta_ts, criteria_json, tags, is_active)
+        )
+        conn.commit()
+        row = conn.execute('SELECT id FROM saved_patterns WHERE name = ?', (name,)).fetchone()
+        return row[0] if row else 0
+    finally:
+        conn.close()
+
+
+def load_pattern(name_or_id, path: str = DEFAULT_DB_PATH) -> Optional[dict]:
+    """Load a pattern by name or id. Returns dict with parsed criteria."""
+    conn = _connect(path)
+    try:
+        if isinstance(name_or_id, int):
+            row = conn.execute('SELECT * FROM saved_patterns WHERE id = ?',
+                               (name_or_id,)).fetchone()
+        else:
+            row = conn.execute('SELECT * FROM saved_patterns WHERE name = ?',
+                               (name_or_id,)).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d['criteria'] = _json.loads(d['criteria_json'])
+        return d
+    finally:
+        conn.close()
+
+
+def list_patterns(active_only: bool = False,
+                  path: str = DEFAULT_DB_PATH) -> list:
+    """List all saved patterns."""
+    conn = _connect(path)
+    try:
+        q = 'SELECT * FROM saved_patterns'
+        if active_only:
+            q += ' WHERE is_active = 1'
+        q += ' ORDER BY updated_at DESC'
+        rows = conn.execute(q).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d['criteria'] = _json.loads(d['criteria_json'])
+            result.append(d)
+        return result
+    finally:
+        conn.close()
+
+
+def delete_pattern(name_or_id, path: str = DEFAULT_DB_PATH) -> bool:
+    """Delete a pattern by name or id."""
+    conn = _connect(path)
+    try:
+        if isinstance(name_or_id, int):
+            conn.execute('DELETE FROM saved_patterns WHERE id = ?', (name_or_id,))
+        else:
+            conn.execute('DELETE FROM saved_patterns WHERE name = ?', (name_or_id,))
+        conn.commit()
+        return conn.total_changes > 0
+    finally:
+        conn.close()
+
+
+def update_pattern_stats(pattern_id: int, match_count: int, win_rate: float,
+                         path: str = DEFAULT_DB_PATH):
+    """Update last match stats for a pattern."""
+    conn = _connect(path)
+    try:
+        conn.execute(
+            """UPDATE saved_patterns SET last_match_count = ?, last_match_win_rate = ?,
+               updated_at = datetime('now') WHERE id = ?""",
+            (match_count, win_rate, pattern_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ============================================================================
+# SIGNAL CRUD (for live detection)
+# ============================================================================
+
+def save_signal(pattern_id: int, pattern_name: str, match_ts: int,
+                match_score: float, direction_bias: str, tf: str,
+                price_at_signal: float, path: str = DEFAULT_DB_PATH) -> int:
+    """Save a pattern signal. Returns signal id."""
+    conn = _connect(path)
+    try:
+        cur = conn.execute(
+            """INSERT INTO pattern_signals
+               (pattern_id, pattern_name, match_ts, match_score,
+                direction_bias, tf, price_at_signal)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (pattern_id, pattern_name, match_ts, match_score,
+             direction_bias, tf, price_at_signal)
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def get_active_signals(hours: int = 24, path: str = DEFAULT_DB_PATH) -> list:
+    """Get undismissed signals from the last N hours."""
+    conn = _connect(path)
+    try:
+        rows = conn.execute(
+            """SELECT * FROM pattern_signals
+               WHERE dismissed = 0
+                 AND created_at > datetime('now', ?)
+               ORDER BY created_at DESC""",
+            (f'-{hours} hours',)
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def dismiss_signal(signal_id: int, path: str = DEFAULT_DB_PATH):
+    """Dismiss a signal."""
+    conn = _connect(path)
+    try:
+        conn.execute('UPDATE pattern_signals SET dismissed = 1 WHERE id = ?',
+                      (signal_id,))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 if __name__ == '__main__':

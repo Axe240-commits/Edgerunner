@@ -9,13 +9,13 @@ import './DashboardHeader.css'
 
 const TF_LIST = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w', '1M']
 
-export default function DashboardHeader({ ticker, sparkline, stats, tf, timeframes, onTfChange, activeTab, onTabChange }) {
+export default function DashboardHeader({ ticker, sparkline, stats, tf, timeframes, onTfChange, activeTab, onTabChange, signalCount }) {
   const { logout } = useAuth()
   const sparkRef = useRef(null)
   const [clock, setClock] = useState('')
 
   useEffect(() => {
-    const update = () => setClock(new Date().toLocaleTimeString('en-US', { hour12: false }))
+    const update = () => setClock(new Date().toLocaleTimeString('de-DE', { hour12: false, timeZone: 'Europe/Berlin' }))
     update()
     const id = setInterval(update, 1000)
     return () => clearInterval(id)
@@ -72,6 +72,9 @@ export default function DashboardHeader({ ticker, sparkline, stats, tf, timefram
         <div className="stats-row">
           <span>CANDLES <span className="stat-val">{fmtCompact(stats?.candles_processed || 0)}</span></span>
           <span>PATTERNS <span className="stat-val">{fmtCompact(stats?.patterns_detected || 0)}</span></span>
+          {signalCount > 0 && (
+            <span className="signal-badge">SIGNALS <span className="signal-count">{signalCount}</span></span>
+          )}
           <span>UPTIME <span className="stat-val">{fmtUptime(stats?.uptime_seconds || 0)}</span></span>
         </div>
         <span className="clock">{clock}</span>

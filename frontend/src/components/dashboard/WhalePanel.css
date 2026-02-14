@@ -1,43 +1,276 @@
-.whale-feed {
-  height: calc(100% - 28px);
+.whale-panel {
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
-  font-size: 11px;
-  padding: 4px 12px;
 }
 
-.whale-entry {
-  padding: 2px 0;
+/* Pressure Bar */
+.whale-pressure {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.wp-bar {
+  display: flex;
+  height: 14px;
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+
+.wp-buy {
+  background: rgba(0, 255, 136, 0.25);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: width 0.5s;
+}
+
+.wp-buy span {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--green);
+  font-weight: 700;
+}
+
+.wp-sell {
+  background: rgba(255, 51, 85, 0.25);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: width 0.5s;
+}
+
+.wp-sell span {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--red);
+  font-weight: 700;
+}
+
+.wp-stats {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-family: var(--mono);
+  font-size: 9px;
+}
+
+.wp-buy-stat {
+  color: var(--green);
+}
+
+.wp-sell-stat {
+  color: var(--red);
+}
+
+.wp-net {
+  font-weight: 700;
+  letter-spacing: 1px;
+  font-size: 10px;
+}
+
+.wp-net.bullish { color: var(--green); }
+.wp-net.bearish { color: var(--red); }
+.wp-net.neutral { color: var(--text-dim); }
+
+.up { color: var(--green); }
+.down { color: var(--red); }
+
+/* Tabs */
+.whale-tabs {
+  display: flex;
+  padding: 4px 12px;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.wt-btn {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  padding: 4px 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.wt-btn:hover {
+  border-color: var(--text-dim);
+}
+
+.wt-btn.active {
+  border-color: var(--cyan);
+  color: var(--cyan);
+  background: rgba(0, 240, 255, 0.06);
+}
+
+/* Feed */
+.whale-feed {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 8px;
+  font-size: 10px;
+}
+
+.whale-header {
   display: flex;
   align-items: center;
   gap: 6px;
-  opacity: 0;
-  animation: slideIn 0.3s ease forwards;
+  padding: 4px 4px 6px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 2px;
+  position: sticky;
+  top: 0;
+  background: var(--bg-panel, #0a0e14);
+  z-index: 1;
 }
 
-.tier-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
+.whale-header span {
+  font-family: var(--mono);
+  font-size: 8px;
+  letter-spacing: 1px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+}
+
+.whale-empty {
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 12px;
+  text-align: center;
+}
+
+.whale-entry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px;
+  border-bottom: 1px solid rgba(0, 240, 255, 0.04);
+  font-family: var(--mono);
+  transition: background 0.1s;
+}
+
+.whale-entry:hover {
+  background: rgba(0, 240, 255, 0.04);
+}
+
+.we-time {
+  font-size: 9px;
+  color: var(--text-dim);
+  min-width: 90px;
   flex-shrink: 0;
 }
 
-.tier-dot.MEGA_WHALE { background: var(--magenta); box-shadow: 0 0 6px var(--magenta); }
-.tier-dot.WHALE { background: var(--cyan); box-shadow: 0 0 4px var(--cyan); }
-.tier-dot.DOLPHIN { background: var(--green); }
-.tier-dot.FISH { background: var(--text-dim); }
-.tier-dot.SHRIMP { background: var(--text-dim); opacity: 0.5; }
-
-.whale-addr {
-  color: var(--text-dim);
-  min-width: 90px;
+.we-side {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  min-width: 32px;
+  flex-shrink: 0;
 }
 
-.whale-action {
-  color: var(--text);
-  flex: 1;
+.we-side.buy {
+  color: var(--green);
 }
 
-.whale-size {
+.we-side.sell {
+  color: var(--red);
+}
+
+.we-size {
   color: var(--amber);
   font-variant-numeric: tabular-nums;
+  min-width: 50px;
+  flex-shrink: 0;
+}
+
+.we-tier {
+  font-size: 8px;
+  letter-spacing: 1px;
+  padding: 1px 4px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.we-tier.mega_whale, .we-tier.elite {
+  color: var(--magenta);
+  background: rgba(255, 0, 200, 0.1);
+}
+
+.we-tier.whale, .we-tier.proven {
+  color: var(--cyan);
+  background: rgba(0, 240, 255, 0.1);
+}
+
+.we-tier.dolphin, .we-tier.unproven {
+  color: var(--text-dim);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.we-price {
+  color: var(--text);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.we-price-dim {
+  color: var(--text-dim);
+  font-size: 8px;
+  flex-shrink: 0;
+}
+
+.we-pnl {
+  font-size: 9px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  min-width: 45px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.we-wr {
+  font-size: 8px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.we-signal {
+  font-size: 8px;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  min-width: 65px;
+  flex-shrink: 0;
+}
+
+.we-signal.bull {
+  color: var(--green);
+}
+
+.we-signal.bear {
+  color: var(--red);
+}
+
+.we-lev {
+  font-size: 9px;
+  color: var(--amber);
+  min-width: 28px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.we-cascade {
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--red);
+  background: rgba(255, 51, 85, 0.15);
+  padding: 1px 4px;
+  border-radius: 2px;
 }

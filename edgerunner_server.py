@@ -33,7 +33,10 @@ from db import (init_db, insert_candles, count_candles, get_candle_by_ts,
                 create_user, authenticate_user, create_session,
                 validate_session, delete_session,
                 get_settings, save_settings, get_candles_paginated,
-                get_candle_neighbors)
+                get_candle_neighbors,
+                save_pattern, load_pattern, list_patterns, delete_pattern,
+                update_pattern_stats, save_signal, get_active_signals,
+                dismiss_signal)
 import hyperliquid_api
 
 PORT = int(sys.argv[sys.argv.index('--port') + 1]) if '--port' in sys.argv else 9998
@@ -340,7 +343,7 @@ _last_candle_ts_by_tf = {tf: 0 for tf in TIMEFRAMES}
 
 # Thread control
 THREAD_NAMES = ['HL Multi-TF Poller', 'Ticker Poller', 'Whale Loader',
-                'System Health', 'Signal Updater']
+                'System Health', 'Signal Updater', 'Pattern Detector']
 _pause_events = {name: threading.Event() for name in THREAD_NAMES}
 for _ev in _pause_events.values():
     _ev.set()  # All running by default
@@ -351,6 +354,7 @@ _poll_intervals = {
     'Whale Loader': 15,
     'System Health': 5,
     'Signal Updater': 1,
+    'Pattern Detector': 10,
 }
 _enabled_tfs = set(TIMEFRAMES)
 
@@ -375,6 +379,19 @@ def _hyperliquid_poller():
                     latest_ts = candles[-1]['timestamp']
                     if latest_ts == _last_candle_ts_by_tf[tf]:
                         continue
+
+                    # Merge Binance volume + delta
+                    try:
+                        bv = hyperliquid_api.fetch_binance_volume(
+                            tf,
+                            start_ms=candles[0]['timestamp'],
+                            end_ms=candles[-1]['timestamp'] + 1,
+                            limit=len(candles),
+                        )
+                        if bv:
+                            hyperliquid_api.merge_binance_volume(candles, bv)
+                    except Exception as bv_err:
+                        pass  # Fall back to HL volume silently
 
                     # Run feature engine
                     t_start = time.time()
@@ -693,6 +710,272 @@ def _signal_updater():
 
 
 # ============================================================================
+# THREAD 6: Pattern Detector
+# ============================================================================
+
+_last_detected_ts = {tf: 0 for tf in TIMEFRAMES}
+_active_signals = []  # In-memory cache of recent signals
+
+def _pattern_detector():
+    """Checks all active saved patterns against new candles."""
+    global _active_signals
+    while True:
+        _pause_events['Pattern Detector'].wait()
+        try:
+            from live_detector import check_patterns_for_candle, save_detected_signals
+
+            for tf in ['1m', '5m', '15m']:  # Only check fast TFs
+                with _state_lock:
+                    candles = state['candles_by_tf'].get(tf, [])
+                if not candles:
+                    continue
+
+                latest_ts = candles[-1].get('time', 0)
+                if latest_ts <= _last_detected_ts.get(tf, 0):
+                    continue
+
+                signals = check_patterns_for_candle(latest_ts, tf, path=_db_path)
+                if signals:
+                    saved = save_detected_signals(signals, path=_db_path)
+                    if saved > 0:
+                        # Refresh in-memory cache
+                        from db import get_active_signals
+                        _active_signals = get_active_signals(hours=24, path=_db_path)
+                        print(f'  [PatternDetector] {saved} new signal(s) on {tf}')
+
+                _last_detected_ts[tf] = latest_ts
+
+        except Exception as e:
+            print(f'  [PatternDetector] Error: {e}')
+
+        time.sleep(_poll_intervals.get('Pattern Detector', 10))
+
+
+# ============================================================================
+# AI PRE-ANALYSE — Strukturierte Kerzen-Zusammenfassung
+# ============================================================================
+
+def _build_candle_analysis(candle_data, lookback_count):
+    """Baut eine vor-interpretierte Analyse-Zusammenfassung fuer den AI Chat.
+
+    Statt 80+ rohe Zahlen: klare Fakten-Saetze die das LLM nur noch
+    erklaeren/kommentieren muss, nicht interpretieren.
+    """
+    if not candle_data or not candle_data.get('meta'):
+        return None
+
+    m = candle_data['meta']
+    lines = []
+
+    # --- 1. Kerzen-Steckbrief ---
+    ts_val = m.get('timestamp', 0)
+    ts_str = datetime.fromtimestamp(ts_val / 1000).strftime('%Y-%m-%d %H:%M:%S')
+    is_bull = bool(m.get('is_bullish'))
+    direction = 'BULLISH (gruene Kerze)' if is_bull else 'BEARISH (rote Kerze)'
+
+    lines.append(f'KERZE: {ts_str}')
+    lines.append(f'Richtung: {direction}')
+    lines.append(f'Open: {m.get("open", 0):.2f} | High: {m.get("high", 0):.2f} | Low: {m.get("low", 0):.2f} | Close: {m.get("close", 0):.2f}')
+
+    body = abs((m.get('close', 0) or 0) - (m.get('open', 0) or 0))
+    total_range = m.get('total_range', 0) or 0
+    lines.append(f'Body: {body:.2f} | Range: {total_range:.2f} | Body-Ratio: {(m.get("body_ratio", 0) or 0):.2f}')
+    lines.append(f'Volume: {(m.get("volume", 0) or 0):.2f} | Delta: {(m.get("delta", 0) or 0):.2f}')
+    lines.append('')
+
+    # --- 2. Struktur-Events (nur aktive) ---
+    events = []
+    if m.get('bos_bull'):
+        events.append('BOS BULL (Bullish Break of Structure) — Preis hat letztes Swing High gebrochen')
+    if m.get('bos_bear'):
+        events.append('BOS BEAR (Bearish Break of Structure) — Preis hat letztes Swing Low gebrochen')
+    if m.get('choch'):
+        events.append('CHoCH (Change of Character) — Trendwechsel-Signal')
+    if m.get('is_swing_high'):
+        events.append('SWING HIGH — Diese Kerze ist ein lokales Hoch')
+    if m.get('is_swing_low'):
+        events.append('SWING LOW — Diese Kerze ist ein lokales Tief')
+    if m.get('bull_div'):
+        ds = m.get('div_strength', 0) or 0
+        events.append(f'BULLISCHE DIVERGENZ (Staerke: {ds:.4f}) — Preis faellt aber MACD steigt')
+    if m.get('bear_div'):
+        ds = m.get('div_strength', 0) or 0
+        events.append(f'BAERISCHE DIVERGENZ (Staerke: {ds:.4f}) — Preis steigt aber MACD faellt')
+    if m.get('is_seeker_kill'):
+        events.append(f'SEEKER KILL — {m.get("killed_seeker_divs", 0)} Seeker-Div(s) invalidiert')
+    if m.get('is_seeker_div'):
+        events.append(f'SEEKER DIVERGENZ #{m.get("seeker_div_nr", 0)} aktiv')
+
+    if events:
+        lines.append('STRUKTUR-EVENTS:')
+        for e in events:
+            lines.append(f'  * {e}')
+    else:
+        lines.append('STRUKTUR-EVENTS: Keine (neutrale Kerze ohne BOS/CHoCH/Divergenz)')
+    lines.append('')
+
+    # --- 3. Indikatoren (mit Interpretation) ---
+    rsi = m.get('rsi14', 0) or 0
+    if rsi < 30:
+        rsi_text = f'RSI: {rsi:.2f} — UEBERVERKAUFT'
+    elif rsi > 70:
+        rsi_text = f'RSI: {rsi:.2f} — UEBERKAUFT'
+    elif rsi < 40:
+        rsi_text = f'RSI: {rsi:.2f} — niedrig (nahe ueberverkauft)'
+    elif rsi > 60:
+        rsi_text = f'RSI: {rsi:.2f} — hoch (nahe ueberkauft)'
+    else:
+        rsi_text = f'RSI: {rsi:.2f} — neutral'
+
+    vol = m.get('vol_vs_ma', 0) or 0
+    if vol > 2.0:
+        vol_text = f'Volume vs MA: {vol:.2f} — SEHR HOCH (>2x Durchschnitt)'
+    elif vol > 1.5:
+        vol_text = f'Volume vs MA: {vol:.2f} — HOCH (>1.5x Durchschnitt)'
+    elif vol < 0.5:
+        vol_text = f'Volume vs MA: {vol:.2f} — NIEDRIG (<0.5x Durchschnitt)'
+    else:
+        vol_text = f'Volume vs MA: {vol:.2f} — normal'
+
+    macd = m.get('macd_line', 0) or 0
+    macd_text = f'MACD: {macd:.4f}'
+    if m.get('macd_peak'):
+        macd_text += ' (PEAK — moegliche Umkehr nach unten)'
+    elif m.get('macd_trough'):
+        macd_text += ' (TROUGH — moegliche Umkehr nach oben)'
+
+    delta_pct = m.get('delta_pct', 0) or 0
+    if delta_pct > 50:
+        delta_text = f'Delta %: {delta_pct:.2f}% — starker Kaufdruck'
+    elif delta_pct < -50:
+        delta_text = f'Delta %: {delta_pct:.2f}% — starker Verkaufsdruck'
+    else:
+        delta_text = f'Delta %: {delta_pct:.2f}%'
+
+    lines.append('INDIKATOREN:')
+    lines.append(f'  {rsi_text}')
+    lines.append(f'  {vol_text}')
+    lines.append(f'  {macd_text}')
+    lines.append(f'  {delta_text}')
+    lines.append(f'  ATR(14): {(m.get("atr14", 0) or 0):.2f}')
+    lines.append('')
+
+    # --- 4. Trend-Kontext (EMAs) ---
+    ema21 = m.get('ema21_dist', 0) or 0
+    ema50 = m.get('ema50_dist', 0) or 0
+    ema200 = m.get('ema200_dist', 0) or 0
+    vwap = m.get('vwap_dist', 0) or 0
+
+    lines.append('TREND-KONTEXT:')
+    lines.append(f'  EMA21 Abstand: {ema21:.4f}% ({"drueber" if ema21 > 0 else "drunter"})')
+    lines.append(f'  EMA50 Abstand: {ema50:.4f}% ({"drueber" if ema50 > 0 else "drunter"})')
+    lines.append(f'  EMA200 Abstand: {ema200:.4f}% ({"drueber" if ema200 > 0 else "drunter"})')
+    lines.append(f'  VWAP Abstand: {vwap:.4f}%')
+
+    htf = m.get('htf_trend', 0) or 0
+    if htf > 0:
+        lines.append(f'  HTF Trend: {htf} (hoehere TF ist BULLISH)')
+    elif htf < 0:
+        lines.append(f'  HTF Trend: {htf} (hoehere TF ist BEARISH)')
+    else:
+        lines.append(f'  HTF Trend: {htf} (neutral)')
+    lines.append('')
+
+    # --- 5. Break-Qualitaet (nur wenn BOS aktiv) ---
+    if m.get('bos_bull') or m.get('bos_bear'):
+        bd = m.get('break_depth', 0) or 0
+        sa = m.get('swing_age', 0) or 0
+        san = m.get('swing_age_norm', 0) or 0
+        lines.append('BREAK-QUALITAET:')
+        lines.append(f'  Break-Tiefe: {bd:.4f}')
+        lines.append(f'  Swing-Alter: {sa} Kerzen (normalisiert: {san:.2f})')
+        lines.append(f'  Body-Break: {"JA" if m.get("bos_body") else "NEIN"} | Wick-Break: {"JA" if m.get("bos_wick") else "NEIN"}')
+        lines.append(f'  Breaks Highs: {m.get("breaks_highs", 0)} | Breaks Lows: {m.get("breaks_lows", 0)}')
+        if m.get('broken_was_seeker'):
+            lines.append(f'  Gebrochener Swing war SEEKER')
+        if m.get('broken_was_seeker_div'):
+            lines.append(f'  Gebrochener Swing war SEEKER-DIV')
+        lines.append('')
+
+    # --- 6. Whale-Daten (nur wenn relevant) ---
+    ws = m.get('whale_sentiment', 0) or 0
+    wc = m.get('whale_confidence', 0) or 0
+    bp = m.get('bull_pressure', 0) or 0
+    brp = m.get('bear_pressure', 0) or 0
+    if ws != 0 or wc > 0 or bp > 0 or brp > 0:
+        lines.append('WHALE-DATEN:')
+        if ws > 0:
+            lines.append(f'  Sentiment: {ws:.4f} (BULLISH)')
+        elif ws < 0:
+            lines.append(f'  Sentiment: {ws:.4f} (BEARISH)')
+        else:
+            lines.append(f'  Sentiment: {ws:.4f} (neutral)')
+        lines.append(f'  Konfidenz: {wc:.4f}')
+        lines.append(f'  Bull Pressure: {bp:.4f} | Bear Pressure: {brp:.4f}')
+        if m.get('elite_whale_active'):
+            lines.append(f'  ELITE WHALE AKTIV (>$1M)')
+        if m.get('whale_cluster'):
+            wcs = m.get('whale_cluster_strength', 0) or 0
+            wcd = m.get('whale_cluster_dir', 0) or 0
+            lines.append(f'  Whale-Cluster: Staerke {wcs:.4f}, Richtung {wcd:.4f}')
+        lines.append('')
+
+    # --- 7. Lookback-Kerzen Zusammenfassung ---
+    if candle_data.get('before'):
+        before = candle_data['before']
+        pattern_candles = before[-lookback_count:] if len(before) >= lookback_count else before
+        if pattern_candles:
+            lines.append('VORHERIGE KERZEN:')
+            for i, c in enumerate(pattern_candles):
+                offset = -(len(pattern_candles) - i)
+                cts = datetime.fromtimestamp((c.get('timestamp', 0) or 0) / 1000).strftime('%H:%M')
+                c_dir = 'BULL' if c.get('is_bullish') else 'BEAR'
+                c_rsi = c.get('rsi14', 0) or 0
+                c_vol = c.get('vol_vs_ma', 0) or 0
+                c_close = c.get('close', 0) or 0
+                c_events = []
+                if c.get('bos_bull'): c_events.append('BOS+')
+                if c.get('bos_bear'): c_events.append('BOS-')
+                if c.get('choch'): c_events.append('CHoCH')
+                if c.get('bull_div'): c_events.append('DIV+')
+                if c.get('bear_div'): c_events.append('DIV-')
+                evt_str = f' [{",".join(c_events)}]' if c_events else ''
+                lines.append(
+                    f'  [{offset}] {cts} {c_dir} Close:{c_close:.2f} RSI:{c_rsi:.1f} Vol:{c_vol:.2f}{evt_str}'
+                )
+            lines.append('')
+
+    # --- 8. Gesamt-Einschaetzung ---
+    bull_signals = []
+    bear_signals = []
+    if is_bull: bull_signals.append('Gruene Kerze')
+    else: bear_signals.append('Rote Kerze')
+    if m.get('bos_bull'): bull_signals.append('BOS Bull')
+    if m.get('bos_bear'): bear_signals.append('BOS Bear')
+    if m.get('bull_div'): bull_signals.append('Bull Divergenz')
+    if m.get('bear_div'): bear_signals.append('Bear Divergenz')
+    if rsi < 30: bull_signals.append('RSI ueberverkauft')
+    if rsi > 70: bear_signals.append('RSI ueberkauft')
+    if vol > 1.5: bull_signals.append('Hohes Volume')
+    if ws > 0: bull_signals.append('Whale bullish')
+    if ws < 0: bear_signals.append('Whale bearish')
+    if ema21 > 0: bull_signals.append('Ueber EMA21')
+    if ema21 < 0: bear_signals.append('Unter EMA21')
+
+    lines.append('ZUSAMMENFASSUNG:')
+    lines.append(f'  Bullish-Signale ({len(bull_signals)}): {", ".join(bull_signals) if bull_signals else "keine"}')
+    lines.append(f'  Bearish-Signale ({len(bear_signals)}): {", ".join(bear_signals) if bear_signals else "keine"}')
+    if len(bull_signals) > len(bear_signals):
+        lines.append(f'  Tendenz: EHER BULLISH ({len(bull_signals)} vs {len(bear_signals)} Signale)')
+    elif len(bear_signals) > len(bull_signals):
+        lines.append(f'  Tendenz: EHER BEARISH ({len(bear_signals)} vs {len(bull_signals)} Signale)')
+    else:
+        lines.append(f'  Tendenz: NEUTRAL ({len(bull_signals)} vs {len(bear_signals)} Signale)')
+
+    return '\n'.join(lines)
+
+
+# ============================================================================
 # HTTP HANDLER
 # ============================================================================
 
@@ -972,17 +1255,33 @@ class EdgerunnerHandler(http.server.BaseHTTPRequestHandler):
             try:
                 params = json.loads(body.decode())
                 from pattern_matcher import (find_matches, compute_match_stats,
-                                             enrich_matches_with_whales)
+                                             enrich_matches_with_whales,
+                                             get_pattern_candles)
                 criteria = params.get('criteria', [])
                 tf = params.get('tf', '1m')
                 limit = min(int(params.get('limit', 100)), 500)
                 forward = min(int(params.get('forward_candles', 20)), 60)
                 exclude_ts = params.get('exclude_ts')
                 include_whales = params.get('include_whales', False)
+                include_forward = params.get('include_forward', False)
+
+                # Load reference candles for scoring
+                reference_candles = None
+                if exclude_ts:
+                    max_lb = 0
+                    for c in criteria:
+                        if c['offset'] < 0:
+                            max_lb = max(max_lb, abs(c['offset']))
+                    ref_data = get_pattern_candles(
+                        exclude_ts, max_lb, tf=tf, forward=0, path=_db_path
+                    )
+                    if ref_data:
+                        reference_candles = ref_data['before'] + [ref_data['meta']]
 
                 matches = find_matches(
                     criteria=criteria, tf=tf, limit=limit,
                     forward_candles=forward, exclude_ts=exclude_ts,
+                    reference_candles=reference_candles,
                     path=_db_path
                 )
 
@@ -991,8 +1290,6 @@ class EdgerunnerHandler(http.server.BaseHTTPRequestHandler):
 
                 stats = compute_match_stats(matches)
 
-                # Slim down: don't send full forward candles for each match
-                # (just outcomes), keep before + meta
                 slim_matches = []
                 for m in matches:
                     sm = {
@@ -1000,8 +1297,12 @@ class EdgerunnerHandler(http.server.BaseHTTPRequestHandler):
                         'before': m['before'],
                         'outcome': m['outcome'],
                     }
+                    if m.get('score') is not None:
+                        sm['score'] = m['score']
                     if m.get('whale_context'):
                         sm['whale_context'] = m['whale_context']
+                    if include_forward and m.get('after'):
+                        sm['after'] = m['after']
                     slim_matches.append(sm)
 
                 self._json({
@@ -1012,6 +1313,245 @@ class EdgerunnerHandler(http.server.BaseHTTPRequestHandler):
             except Exception as e:
                 traceback.print_exc()
                 self._json({'error': str(e)}, 400)
+
+        # --- Pattern Save/Delete ---
+        elif path == '/api/pattern/save':
+            try:
+                params = json.loads(body.decode())
+                name = params.get('name', '').strip()
+                if not name:
+                    self._json({'error': 'Pattern name required'}, 400)
+                    return
+                pid = save_pattern(
+                    name=name,
+                    description=params.get('description', ''),
+                    tf=params.get('tf', '1m'),
+                    lookback=int(params.get('lookback', 3)),
+                    meta_ts=int(params.get('meta_ts', 0)),
+                    criteria=params.get('criteria', []),
+                    tags=params.get('tags', ''),
+                    is_active=int(params.get('is_active', 1)),
+                    path=_db_path,
+                )
+                self._json({'ok': True, 'id': pid, 'name': name})
+            except Exception as e:
+                traceback.print_exc()
+                self._json({'error': str(e)}, 400)
+
+        elif path == '/api/pattern/delete':
+            try:
+                params = json.loads(body.decode())
+                name_or_id = params.get('name') or params.get('id')
+                if isinstance(name_or_id, int) or (isinstance(name_or_id, str) and name_or_id.isdigit()):
+                    name_or_id = int(name_or_id)
+                ok = delete_pattern(name_or_id, path=_db_path)
+                self._json({'ok': ok})
+            except Exception as e:
+                self._json({'error': str(e)}, 400)
+
+        # --- Signal Dismiss ---
+        elif path == '/api/signals/dismiss':
+            try:
+                params = json.loads(body.decode())
+                sid = int(params.get('id', 0))
+                dismiss_signal(sid, path=_db_path)
+                self._json({'ok': True})
+            except Exception as e:
+                self._json({'error': str(e)}, 400)
+
+        # --- Auto-Discovery ---
+        elif path == '/api/pattern/discover':
+            try:
+                params = json.loads(body.decode())
+                from auto_discovery import discover_patterns
+                disc_tf = params.get('tf', '1m')
+                disc_lookback = int(params.get('lookback', 3))
+                disc_forward = int(params.get('forward_candles', 20))
+                disc_min_cluster = int(params.get('min_cluster_size', 5))
+                disc_min_wr = float(params.get('min_win_rate', 55))
+                disc_scan_limit = int(params.get('scan_limit', 10000))
+                results = discover_patterns(
+                    tf=disc_tf, lookback=disc_lookback,
+                    forward_candles=disc_forward,
+                    min_cluster_size=disc_min_cluster,
+                    min_win_rate=disc_min_wr,
+                    scan_limit=disc_scan_limit,
+                    path=_db_path,
+                )
+                self._json({'discoveries': results})
+            except Exception as e:
+                traceback.print_exc()
+                self._json({'error': str(e)}, 400)
+
+        # --- AI Chat Analyze ---
+        elif path == '/api/chat/analyze':
+            try:
+                params = json.loads(body.decode())
+                message = params.get('message', '').strip()
+                if not message:
+                    self._json({'error': 'Message required'}, 400)
+                    return
+
+                meta_ts = int(params.get('meta_ts', 0))
+                chat_tf = params.get('tf', '1m')
+                chat_lookback = int(params.get('lookback', 3))
+                chat_criteria = params.get('criteria', {})
+                history = params.get('history', [])
+
+                # Load candle data
+                from pattern_matcher import get_pattern_candles
+                candle_data = get_pattern_candles(
+                    meta_ts, chat_lookback, tf=chat_tf,
+                    forward=0, path=_db_path
+                ) if meta_ts else None
+
+                # === Pre-Analyse: Strukturierte Zusammenfassung bauen ===
+                analysis = _build_candle_analysis(candle_data, chat_lookback)
+
+                # Build criteria summary
+                criteria_lines = []
+                for pos_key, feats in chat_criteria.items():
+                    if not isinstance(feats, dict):
+                        continue
+                    for feat, spec in feats.items():
+                        if not isinstance(spec, dict) or not spec.get('enabled'):
+                            continue
+                        op = spec.get('op', '=')
+                        val = spec.get('value', 0)
+                        tol = spec.get('tolerance', 0)
+                        if op == 'bool':
+                            criteria_lines.append(f'  [{pos_key}] {feat} = bool({val})')
+                        elif op == 'range':
+                            criteria_lines.append(f'  [{pos_key}] {feat} = range({spec.get("min", 0)}-{spec.get("max", 0)})')
+                        elif op == '=':
+                            criteria_lines.append(f'  [{pos_key}] {feat} = {val} ±{tol}')
+                        else:
+                            criteria_lines.append(f'  [{pos_key}] {feat} {op} {val}')
+
+                # Compose system prompt
+                system_parts = [
+                    'Du bist Edge, ein BTC Pattern Analyzer fuer Edgerunner.',
+                    '',
+                    'WICHTIGE REGELN:',
+                    '1. Die Pre-Analyse wird dem User SEPARAT angezeigt. Er sieht die Zahlen bereits.',
+                    '2. Wiederhole KEINE Zahlen, Preise oder Feature-Werte. Der User hat sie schon.',
+                    '3. Gib nur: Einschaetzung, Interpretation, Zusammenhaenge, Criteria-Vorschlaege.',
+                    '4. Widersprich der Pre-Analyse NIEMALS. Wenn dort BULLISH steht, ist es BULLISH.',
+                    '5. Antworte auf Deutsch, knapp (3-6 Saetze max).',
+                    '',
+                ]
+
+                if analysis:
+                    system_parts.append('=== PRE-ANALYSE (FAKTEN — nicht widersprechen) ===')
+                    system_parts.append(analysis)
+                    system_parts.append('=== ENDE PRE-ANALYSE ===')
+                    system_parts.append('')
+
+                if criteria_lines:
+                    system_parts.append('AKTIVE CRITERIA:')
+                    system_parts.extend(criteria_lines)
+                    system_parts.append('')
+
+                system_parts.extend([
+                    'Um Features als Criteria vorzuschlagen, nutze Tags:',
+                    '  [TOGGLE:feature_name:operator:value:tolerance]',
+                    'Beispiele:',
+                    '  [TOGGLE:rsi14:range:0:30]     — RSI Range 0-30',
+                    '  [TOGGLE:bos_bull:bool:1:0]    — BOS Bull = true',
+                    '  [TOGGLE:vol_vs_ma:>:1.5:0]    — Volume > 1.5',
+                    '  [TOGGLE:ema21_dist:=:0.5:0.2] — EMA21 Dist = 0.5 +-0.2',
+                    '  [REMOVE:rsi14]                 — Feature entfernen',
+                    '',
+                    'Erklaere dem User was die Pre-Analyse zeigt und schlage passende Criteria vor.',
+                ])
+
+                system_prompt = '\n'.join(system_parts)
+
+                # Build messages for Claude
+                messages = [{'role': 'system', 'content': system_prompt}]
+                for h in history[-10:]:  # Last 10 messages max
+                    if h.get('role') in ('user', 'assistant'):
+                        messages.append({'role': h['role'], 'content': h['content']})
+                messages.append({'role': 'user', 'content': message})
+
+                # Call Claude Proxy
+                import re as _re
+                CLAUDE_PROXY_URL = 'http://localhost:3456/v1/chat/completions'
+                payload = json.dumps({
+                    'model': 'claude-opus-4-6',
+                    'messages': messages,
+                    'temperature': 0.3,
+                }).encode()
+                req = urllib.request.Request(
+                    CLAUDE_PROXY_URL,
+                    data=payload,
+                    headers={'Content-Type': 'application/json'},
+                    method='POST'
+                )
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    claude_data = json.loads(resp.read().decode())
+
+                reply_text = claude_data['choices'][0]['message']['content']
+                model_used = claude_data.get('model', 'unknown')
+
+                # Parse action tags (robust — skip malformed tags)
+                actions = []
+                TOGGLE_RE = _re.compile(r'\[TOGGLE:(\w+):([^:]+):([^:]+):([^\]]+)\]')
+                REMOVE_RE = _re.compile(r'\[REMOVE:(\w+)\]')
+
+                def _safe_num(s):
+                    """Parse string to number, return None on failure."""
+                    try:
+                        return float(s) if '.' in s else int(s)
+                    except (ValueError, TypeError):
+                        return None
+
+                for m in TOGGLE_RE.finditer(reply_text):
+                    feat, op, val_str, tol_str = m.groups()
+                    if op == 'range':
+                        v_min = _safe_num(val_str)
+                        v_max = _safe_num(tol_str)
+                        if v_min is None or v_max is None:
+                            continue
+                        actions.append({
+                            'action': 'toggle', 'feature': feat, 'op': op,
+                            'min': v_min, 'max': v_max, 'value': 0, 'tolerance': 0,
+                        })
+                    elif op == 'bool':
+                        # Accept 1/0, true/false, yes/no
+                        val = 1 if val_str.lower() in ('1', 'true', 'yes') else 0
+                        actions.append({
+                            'action': 'toggle', 'feature': feat, 'op': 'bool',
+                            'value': val, 'tolerance': 0,
+                        })
+                    else:
+                        val = _safe_num(val_str)
+                        tol = _safe_num(tol_str)
+                        if val is None:
+                            continue
+                        actions.append({
+                            'action': 'toggle', 'feature': feat, 'op': op,
+                            'value': val, 'tolerance': tol or 0,
+                        })
+
+                for m in REMOVE_RE.finditer(reply_text):
+                    actions.append({'action': 'remove', 'feature': m.group(1)})
+
+                # Strip action tags from reply
+                clean_reply = TOGGLE_RE.sub('', reply_text)
+                clean_reply = REMOVE_RE.sub('', clean_reply).strip()
+
+                self._json({
+                    'reply': clean_reply,
+                    'actions': actions,
+                    'model': model_used,
+                    'analysis': analysis or '',
+                })
+            except urllib.error.URLError as e:
+                self._json({'error': f'Claude Proxy nicht erreichbar: {e}'}, 502)
+            except Exception as e:
+                traceback.print_exc()
+                self._json({'error': str(e)}, 500)
 
         # --- Thread Control ---
         elif path == '/api/threads/control':
@@ -1161,6 +1701,123 @@ class EdgerunnerHandler(http.server.BaseHTTPRequestHandler):
                 'enabled_tfs': sorted(_enabled_tfs),
                 'all_tfs': TIMEFRAMES,
             })
+            return
+
+        if path == '/api/patterns':
+            try:
+                params = urllib.parse.parse_qs(parsed.query)
+                active_only = params.get('active_only', ['false'])[0] == 'true'
+                patterns = list_patterns(active_only=active_only, path=_db_path)
+                self._json({'patterns': patterns})
+            except Exception as e:
+                self._json({'error': str(e)}, 500)
+            return
+
+        if path.startswith('/api/pattern/load/'):
+            try:
+                name = urllib.parse.unquote(path.split('/api/pattern/load/', 1)[1])
+                if name.isdigit():
+                    name = int(name)
+                pat = load_pattern(name, path=_db_path)
+                if pat:
+                    self._json(pat)
+                else:
+                    self._json({'error': 'Pattern not found'}, 404)
+            except Exception as e:
+                self._json({'error': str(e)}, 400)
+            return
+
+        if path == '/api/signals':
+            try:
+                params = urllib.parse.parse_qs(parsed.query)
+                hours = int(params.get('hours', [24])[0])
+                signals = get_active_signals(hours=hours, path=_db_path)
+                self._json({'signals': signals})
+            except Exception as e:
+                self._json({'error': str(e)}, 500)
+            return
+
+        if path == '/api/whales/live':
+            try:
+                import sqlite3 as _sq3
+                tokyo_path = os.path.expanduser('~/shadow-tracker/shadow_tracker_tokyo.db')
+                if not os.path.exists(tokyo_path):
+                    self._json({'error': 'Tokyo DB not found'}, 404)
+                    return
+                params = urllib.parse.parse_qs(parsed.query)
+                limit = min(int(params.get('limit', [50])[0]), 200)
+                coin = params.get('coin', ['BTC'])[0]
+
+                conn = _sq3.connect(tokyo_path)
+                conn.row_factory = _sq3.Row
+
+                # Latest whale activity
+                rows = conn.execute('''
+                    SELECT timestamp, coin, side, signal_type, notional_usd,
+                           tier, win_rate, price_at_event, leverage,
+                           pnl_1m, pnl_5m, pnl_15m, pnl_1h, pnl_4h
+                    FROM whale_activity
+                    WHERE coin = ?
+                    ORDER BY timestamp DESC LIMIT ?
+                ''', (coin, limit)).fetchall()
+                activity = [dict(r) for r in rows]
+
+                # Aggregate pressure (last 100 entries)
+                recent = conn.execute('''
+                    SELECT side, SUM(notional_usd) as vol, COUNT(*) as cnt,
+                           AVG(pnl_1h) as avg_pnl_1h
+                    FROM whale_activity
+                    WHERE coin = ?
+                    ORDER BY timestamp DESC LIMIT 100
+                ''', (coin,)).fetchall()
+
+                buys = conn.execute('''
+                    SELECT SUM(notional_usd) as vol, COUNT(*) as cnt, AVG(pnl_1h) as avg_pnl
+                    FROM (SELECT * FROM whale_activity WHERE coin = ? AND side = 'BUY'
+                          ORDER BY timestamp DESC LIMIT 100)
+                ''', (coin,)).fetchone()
+                sells = conn.execute('''
+                    SELECT SUM(notional_usd) as vol, COUNT(*) as cnt, AVG(pnl_1h) as avg_pnl
+                    FROM (SELECT * FROM whale_activity WHERE coin = ? AND side = 'SELL'
+                          ORDER BY timestamp DESC LIMIT 100)
+                ''', (coin,)).fetchone()
+
+                # Recent liquidations
+                liqs = conn.execute('''
+                    SELECT event_time, direction, liq_price, position_size_usd,
+                           price_at_event, is_cascade_part
+                    FROM liquidation_events
+                    WHERE coin = ?
+                    ORDER BY event_time DESC LIMIT 20
+                ''', (coin,)).fetchall()
+
+                conn.close()
+
+                buy_vol = buys['vol'] or 0
+                sell_vol = sells['vol'] or 0
+                total = buy_vol + sell_vol
+
+                pressure = {
+                    'buy_count': buys['cnt'] or 0,
+                    'sell_count': sells['cnt'] or 0,
+                    'buy_volume': round(buy_vol, 2),
+                    'sell_volume': round(sell_vol, 2),
+                    'buy_pct': round(buy_vol / total * 100, 1) if total else 50,
+                    'sell_pct': round(sell_vol / total * 100, 1) if total else 50,
+                    'buy_avg_pnl_1h': round(buys['avg_pnl'] or 0, 4),
+                    'sell_avg_pnl_1h': round(sells['avg_pnl'] or 0, 4),
+                    'net': 'BULLISH' if buy_vol > sell_vol * 1.2 else
+                           'BEARISH' if sell_vol > buy_vol * 1.2 else 'NEUTRAL',
+                }
+
+                self._json({
+                    'activity': activity,
+                    'pressure': pressure,
+                    'liquidations': [dict(l) for l in liqs],
+                })
+            except Exception as e:
+                traceback.print_exc()
+                self._json({'error': str(e)}, 500)
             return
 
         if path == '/api/db/candles':
@@ -1391,6 +2048,7 @@ if __name__ == '__main__':
         ('Whale Loader', _whale_data_loader),
         ('System Health', _system_health_monitor),
         ('Signal Updater', _signal_updater),
+        ('Pattern Detector', _pattern_detector),
     ]
 
     for name, target in threads:
