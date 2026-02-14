@@ -106,7 +106,7 @@ def load_history(coin='BTC', start_date=None, end_date=None,
 
         print(f'  [{tf:>3s}] {_ms_to_date(start_ms)} -> {_ms_to_date(end_ms)}  (~{total_candles:,} candles, ~{hl_requests} HL req)')
 
-        lookback = TF_LOOKBACK.get(tf, 5)
+        lookback = TF_LOOKBACK.get(tf, 2)
         analyzer = CandleAnalyzer(swing_lookback=lookback)
 
         current_ms = start_ms

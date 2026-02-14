@@ -50,7 +50,7 @@ const fmtTs = ts => {
 }
 
 /* ── Individual Candle Slot ─────────────────────────────────── */
-function CandleSlot({ candle, label, selected, isMeta, criteriaCount, onClick }) {
+function CandleSlot({ candle, label, selected, isMeta, criteriaCount, onClick, onSaveRef }) {
   const canvasRef = useRef(null)
 
   useEffect(() => {
@@ -170,29 +170,37 @@ function CandleSlot({ candle, label, selected, isMeta, criteriaCount, onClick })
   if (c.bos_bull) tags.push({ l: 'BOS BULL', c: '#00ff88' })
   if (c.bos_bear) tags.push({ l: 'BOS BEAR', c: '#ff3355' })
   if (c.choch) tags.push({ l: 'CHoCH', c: '#ffd700' })
-  if (c.is_swing_high) tags.push({ l: 'SW HIGH', c: '#ff6600' })
-  if (c.is_swing_low) tags.push({ l: 'SW LOW', c: '#ff6600' })
+  // SW HIGH/LOW shown as prominent banner below, not as small tag
 
   // Divergences
   if (c.bull_div) tags.push({ l: `DIV+ ${(c.div_strength || 0).toFixed(2)}`, c: '#44ffaa' })
   if (c.bear_div) tags.push({ l: `DIV- ${(c.div_strength || 0).toFixed(2)}`, c: '#aa44ff' })
 
   // Seeker
-  if (c.is_seeker_div) tags.push({ l: `SEEKER #${c.seeker_div_nr || '?'}`, c: '#44ffaa' })
-  if (c.is_seeker_kill) tags.push({ l: `KILL ×${c.killed_seeker_divs || 1}`, c: '#ff00ff' })
+  if (c.is_seeker_div) {
+    tags.push({ l: `SKR DIV #${c.seeker_div_nr || '?'}`, c: '#00e5ff' })
+  }
+  if (c.is_seeker_kill) {
+    const kts = c.killed_seeker_ts
+    const ktime = kts ? `@${String(new Date(kts).getHours()).padStart(2,'0')}:${String(new Date(kts).getMinutes()).padStart(2,'0')} ` : ''
+    tags.push({ l: `SKR KILL ${ktime}×${c.killed_seeker_divs || 0}`, c: '#ff00ff' })
+  }
 
   // Break quality (only if BOS active)
   if ((c.bos_bull || c.bos_bear) && c.break_depth) {
-    tags.push({ l: `Depth ${c.break_depth.toFixed(2)}`, c: '#ff00ff' })
-    if (c.bos_body) tags.push({ l: 'BODY-BRK', c: '#ff00ff' })
-    if (c.swing_age) tags.push({ l: `Age ${c.swing_age}`, c: '#ff00ff' })
+    tags.push({ l: `Depth ${c.break_depth.toFixed(2)}`, c: '#c0a0ff' })
+    if (c.bos_body) tags.push({ l: 'BODY-BRK', c: '#e8c040' })
+    // swing_age now shown inside break banner
   }
 
   const vol = c.vol_vs_ma || 0
-  const delta = c.delta_pct || 0
+  const volBtc = c.volume || 0
+  const deltaPct = (c.delta_pct || 0) * 100
   const bodyPos = c.body_position
-  const bodyPosText = bodyPos >= 0.8 ? 'Close oben' :
-    bodyPos >= 0.4 ? 'Close mitte' : 'Close unten'
+  const bodyPosText = bodyPos >= 0.85 ? 'Close oben' :
+    bodyPos >= 0.65 ? 'Close ob. mitte' :
+    bodyPos >= 0.35 ? 'Close mitte' :
+    bodyPos >= 0.15 ? 'Close unt. mitte' : 'Close unten'
 
   const fmtSwingTs = (ts) => {
     if (!ts) return ''
@@ -214,30 +222,64 @@ function CandleSlot({ candle, label, selected, isMeta, criteriaCount, onClick })
       <div className="pm-slot-info">
         {tags.length > 0 && (
           <div className="pm-slot-tags">
-            {tags.map((t, i) => <span key={i} className="pm-slot-tag" style={{ color: t.c, borderColor: t.c }}>{t.l}</span>)}
+            {tags.map((t, i) => <span key={i} className={`pm-slot-tag${t.bg ? ' pm-slot-tag-filled' : ''}`} style={{ color: t.bg ? t.c : t.c, borderColor: t.bg || t.c, background: t.bg || 'transparent' }}>{t.l}</span>)}
           </div>
         )}
 
-        {/* Swing Status */}
+        {/* Swing Status — prominent banner */}
         {(c.is_swing_high || c.is_swing_low) && (
-          <div className="pm-slot-metrics">
-            {c.is_swing_high ? <span style={{ color: '#ff6600' }}>ist SW High</span> : null}
-            {c.is_swing_low ? <span style={{ color: '#ff6600' }}>ist SW Low</span> : null}
+          <div className="pm-slot-swing-banner">
+            {c.is_swing_high ? <span className="pm-swing-badge high">⬆ SWING HIGH</span> : null}
+            {c.is_swing_low ? <span className="pm-swing-badge low">⬇ SWING LOW</span> : null}
           </div>
         )}
 
-        {/* Break Info */}
+        {/* Break Info — prominent banner */}
         {(c.bos_bull || c.bos_bear) && (
-          <div className="pm-slot-metrics">
-            {c.bos_bull ? <span style={{ color: '#00ff88' }}>bricht SW High {c.broken_swing_ts ? `@${fmtSwingTs(c.broken_swing_ts)}` : ''}</span> : null}
-            {c.bos_bear ? <span style={{ color: '#ff3355' }}>bricht SW Low {c.broken_swing_ts ? `@${fmtSwingTs(c.broken_swing_ts)}` : ''}</span> : null}
+          <div className="pm-slot-break-banner">
+            {c.bos_bull ? (
+              <span className="pm-break-badge bull">
+                ⚡ BRICHT SW HIGH{(c.breaks_highs || 0) > 1 ? ` ×${c.breaks_highs}` : ''}
+                {c.broken_swing_ts ? <small> @{fmtSwingTs(c.broken_swing_ts)}</small> : null}
+                {c.swing_age ? <small> ({c.swing_age}K entfernt)</small> : null}
+              </span>
+            ) : null}
+            {c.bos_bear ? (
+              <span className="pm-break-badge bear">
+                ⚡ BRICHT SW LOW{(c.breaks_lows || 0) > 1 ? ` ×${c.breaks_lows}` : ''}
+                {c.broken_swing_ts ? <small> @{fmtSwingTs(c.broken_swing_ts)}</small> : null}
+                {c.swing_age ? <small> ({c.swing_age}K entfernt)</small> : null}
+              </span>
+            ) : null}
           </div>
         )}
 
-        {/* Vol + Delta + Body */}
+        {/* Volume Heat Bar */}
+        {(() => {
+          const volClamped = Math.min(vol, 4)
+          const pct = Math.min((volClamped / 4) * 100, 100)
+          const volColor = vol >= 2.5 ? '#ff3355' : vol >= 1.5 ? '#00ff88' : '#3a6080'
+          const bgColor = vol >= 2.5 ? 'rgba(255,51,85,0.12)' : vol >= 1.5 ? 'rgba(0,255,136,0.08)' : 'rgba(58,96,128,0.08)'
+          const btcLabel = volBtc >= 100 ? `${(volBtc).toFixed(0)} BTC` : `${volBtc.toFixed(1)} BTC`
+          return (
+            <div className="pm-vol-bar-wrap">
+              <div className="pm-vol-bar-track" style={{ background: bgColor }}>
+                <div className="pm-vol-bar-fill" style={{ width: `${pct}%`, background: volColor }} />
+                <span className="pm-vol-bar-label" style={{ color: vol >= 1.5 ? '#fff' : '#8899aa' }}>
+                  {btcLabel} · {vol.toFixed(1)}x{vol >= 1.5 ? ' SPIKE' : ''}
+                </span>
+              </div>
+              <div className="pm-vol-bar-side">
+                <span style={{ color: deltaPct > 30 ? '#00ff88' : deltaPct < -30 ? '#ff3355' : '#667788' }}>
+                  D{deltaPct > 0 ? '+' : ''}{deltaPct.toFixed(0)}%
+                </span>
+              </div>
+            </div>
+          )
+        })()}
+
+        {/* Body Position */}
         <div className="pm-slot-metrics">
-          <span style={{ color: vol > 1.5 ? '#00ff88' : '#8899aa' }}>Vol {vol.toFixed(1)}x</span>
-          <span style={{ color: delta > 30 ? '#00ff88' : delta < -30 ? '#ff3355' : '#8899aa' }}>D {delta > 0 ? '+' : ''}{delta.toFixed(0)}%</span>
           <span>{bodyPosText}</span>
         </div>
 
@@ -251,7 +293,13 @@ function CandleSlot({ candle, label, selected, isMeta, criteriaCount, onClick })
         )}
       </div>
       <div className="pm-slot-footer">
-        <span className="pm-slot-ts">{fmtTs(c.timestamp)?.slice(11, 16)}</span>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span className="pm-slot-ts">{fmtTs(c.timestamp)?.slice(11, 16)}</span>
+          {onSaveRef && (
+            <button className="pm-ref-save-btn" onClick={e => { e.stopPropagation(); onSaveRef(c.timestamp) }}
+              title="Save as Reference">REF</button>
+          )}
+        </div>
       </div>
     </div>
   )
@@ -328,9 +376,110 @@ export default function ScenarioTab({ tf, initialTs, onTsClear, signals }) {
   const [discoveries, setDiscoveries] = useState([])
   const [discovering, setDiscovering] = useState(false)
 
+  // Reference Library
+  const [showRefPanel, setShowRefPanel] = useState(false)
+  const [references, setReferences] = useState([])
+  const [refCount, setRefCount] = useState(0)
+  const [loadingRefs, setLoadingRefs] = useState(false)
+  const [scanningRef, setScanningRef] = useState(null)
+
   // Dismiss signal
   const dismissSignal = async (id) => {
     await apiPost('/api/signals/dismiss', { id })
+  }
+
+  // Load reference count on mount
+  useEffect(() => {
+    api(`/api/references?tf=${tf}&limit=1`).then(res => {
+      if (res?.references) setRefCount(res.references.length)
+    })
+    // Full count
+    api('/api/references?limit=500').then(res => {
+      if (res?.references) setRefCount(res.references.length)
+    })
+  }, [tf])
+
+  // Save a candle as reference
+  const saveReference = async (ts) => {
+    setMsg('')
+    const res = await apiPost('/api/reference/save', {
+      ts, tf, forward_candles: forwardCandles,
+    })
+    if (res?.ok) {
+      setMsg(`Referenz gespeichert — ${res.features_extracted} Features`)
+      setRefCount(prev => prev + 1)
+      // Refresh refs if panel is open
+      if (showRefPanel) loadReferences()
+    } else {
+      setMsg(res?.error || 'Referenz speichern fehlgeschlagen')
+    }
+  }
+
+  // Load references list
+  const loadReferences = async () => {
+    setLoadingRefs(true)
+    const res = await api('/api/references?limit=100')
+    setLoadingRefs(false)
+    if (res?.references) {
+      setReferences(res.references)
+      setRefCount(res.references.length)
+    }
+  }
+
+  // Toggle reference panel
+  const toggleRefPanel = () => {
+    const next = !showRefPanel
+    setShowRefPanel(next)
+    if (next) loadReferences()
+  }
+
+  // Click on a reference → load as meta candle + fill criteria
+  const loadReference = async (ref) => {
+    if (!ref.meta_ts) return
+    setMetaTs(String(ref.meta_ts))
+    setLoading(true)
+    const data = await api(`/api/pattern/candles?ts=${ref.meta_ts}&tf=${ref.tf || tf}&lookback=${lookback}&forward=5`)
+    setLoading(false)
+    if (data && !data.error) {
+      setPatternData(data)
+      setResults(null)
+      // Load criteria from reference
+      const refDetail = await api(`/api/pattern/load/${ref.id}`)
+      if (refDetail && refDetail.criteria) {
+        const newCriteria = {}
+        const patCount = Math.min(lookback, data.before.length)
+        newCriteria[0] = {}
+        for (let i = 0; i < patCount; i++) {
+          newCriteria[-(patCount - i)] = {}
+        }
+        for (const c of refDetail.criteria) {
+          const offset = c.offset
+          if (newCriteria[offset] === undefined) newCriteria[offset] = {}
+          for (const [feat, spec] of Object.entries(c.features || {})) {
+            newCriteria[offset][feat] = { enabled: true, ...spec }
+          }
+        }
+        setCriteria(newCriteria)
+        setSelectedPos(0)
+        setMsg(`Referenz "${ref.name}" geladen`)
+      }
+    }
+  }
+
+  // Scan with a reference's criteria
+  const scanReference = async (ref) => {
+    setScanningRef(ref.id)
+    const res = await apiPost('/api/reference/scan', {
+      ref_id: ref.id, limit: matchLimit,
+    })
+    setScanningRef(null)
+    if (res?.matches) {
+      setResults(res)
+      setExpandedMatch(null)
+      setMsg(`Scan: ${res.stats?.total || 0} Matches gefunden`)
+    } else {
+      setMsg(res?.error || 'Scan fehlgeschlagen')
+    }
   }
 
   // Run auto-discovery
@@ -743,6 +892,10 @@ export default function ScenarioTab({ tf, initialTs, onTsClear, signals }) {
             disabled={!patternData || activeCriteriaCount === 0}>Save</button>
           <button className="stab-btn stab-btn--primary" onClick={openLoadDialog}>Load</button>
           <button className="stab-btn stab-btn--primary" onClick={() => setShowDiscovery(true)}>Discover</button>
+          <button className="stab-btn stab-btn--primary" onClick={toggleRefPanel}
+            style={showRefPanel ? { borderColor: 'var(--amber)', color: 'var(--amber)', background: 'rgba(255,170,0,0.08)' } : {}}>
+            Refs{refCount > 0 ? ` (${refCount})` : ''}
+          </button>
         </div>
       </div>
 
@@ -832,6 +985,79 @@ export default function ScenarioTab({ tf, initialTs, onTsClear, signals }) {
         </div>
       )}
 
+      {/* Reference Library Panel */}
+      {showRefPanel && (
+        <div className="pm-ref-panel">
+          <div className="pm-ref-panel-header">
+            <span>REFERENZ-BIBLIOTHEK ({references.length})</span>
+            <button className="pm-active-remove" onClick={() => setShowRefPanel(false)}>&times;</button>
+          </div>
+          {loadingRefs ? (
+            <div style={{ color: 'var(--text-dim)', padding: 8, fontFamily: 'var(--mono)', fontSize: 11 }}>Loading...</div>
+          ) : references.length === 0 ? (
+            <div style={{ color: 'var(--text-dim)', padding: 8, fontFamily: 'var(--mono)', fontSize: 11 }}>
+              Keine Referenzen — klicke REF auf einer Kerze zum Speichern
+            </div>
+          ) : (
+            <div className="pm-ref-grid">
+              {references.map(ref => {
+                const o = ref.outcome || {}
+                const dir = o.direction || '—'
+                const dirClass = dir === 'LONG' ? 'up' : dir === 'SHORT' ? 'down' : ''
+                const pnl5 = o.pnl_5c
+                const pnl10 = o.pnl_10c
+                const pnl20 = o.pnl_20c
+                const maxFav = o.max_favorable
+                const maxAdv = o.max_adverse
+                return (
+                  <div key={ref.id} className="pm-ref-card">
+                    <div className="pm-ref-card-top">
+                      <span className="pm-ref-card-name" onClick={() => loadReference(ref)}
+                        title="Klick zum Laden">{ref.name}</span>
+                      <span className={`pm-ref-card-dir ${dirClass}`}>{dir}</span>
+                      <span className="pm-ref-card-feats">{ref.features_count}F</span>
+                    </div>
+                    <div className="pm-ref-card-outcomes">
+                      {pnl5 != null && (
+                        <span className={`pm-ref-outcome-badge ${pnl5 >= 0 ? 'profit' : 'loss'}`}>
+                          5c: {pnl5.toFixed(3)}%
+                        </span>
+                      )}
+                      {pnl10 != null && (
+                        <span className={`pm-ref-outcome-badge ${pnl10 >= 0 ? 'profit' : 'loss'}`}>
+                          10c: {pnl10.toFixed(3)}%
+                        </span>
+                      )}
+                      {pnl20 != null && (
+                        <span className={`pm-ref-outcome-badge ${pnl20 >= 0 ? 'profit' : 'loss'}`}>
+                          20c: {pnl20.toFixed(3)}%
+                        </span>
+                      )}
+                      {maxFav != null && (
+                        <span className="pm-ref-outcome-badge profit">MF: {maxFav.toFixed(3)}%</span>
+                      )}
+                      {maxAdv != null && (
+                        <span className="pm-ref-outcome-badge loss">MA: {maxAdv.toFixed(3)}%</span>
+                      )}
+                    </div>
+                    <div className="pm-ref-card-actions">
+                      <button className="stab-btn stab-btn--accent" style={{ fontSize: '9px', padding: '2px 8px' }}
+                        onClick={() => loadReference(ref)}>Load</button>
+                      <button className="stab-btn stab-btn--primary" style={{ fontSize: '9px', padding: '2px 8px' }}
+                        disabled={scanningRef === ref.id}
+                        onClick={() => scanReference(ref)}>
+                        {scanningRef === ref.id ? 'Scan...' : 'Scan'}
+                      </button>
+                      <span className="pm-ref-card-time">{ref.created_at?.slice(5, 16)}</span>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
       {patternData && (
         <div className="pm-body">
           {/* Candle Slots */}
@@ -849,6 +1075,7 @@ export default function ScenarioTab({ tf, initialTs, onTsClear, signals }) {
                   isMeta={isMeta}
                   criteriaCount={cc}
                   onClick={() => setSelectedPos(offset)}
+                  onSaveRef={saveReference}
                 />
               )
             })}

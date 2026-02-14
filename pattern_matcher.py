@@ -27,6 +27,77 @@ TF_MS = {
 }
 
 
+# Feature classification for auto_extract_criteria
+_SKIP_FEATURES = {
+    'timestamp', 'open', 'high', 'low', 'close', 'volume', 'delta',
+    'sw_ohlc', 'prev_swing_features', 'broken_swing_ts', 'killed_seeker_ts',
+    'id',
+}
+
+_BINARY_FEATURES = {
+    'is_bullish', 'is_swing_high', 'is_swing_low', 'bos_bull', 'bos_bear',
+    'choch', 'bos_body', 'bos_wick', 'sw_bullish', 'same_dir',
+    'broken_was_seeker', 'broken_was_seeker_div', 'swing_had_break',
+    'macd_peak', 'macd_trough', 'bull_div', 'bear_div', 'div_near_daily',
+    'is_seeker_hs', 'is_seeker_ls', 'is_seeker_div', 'is_seeker_kill',
+    'candle_was_seeker', 'candle_was_seeker_div', 'htf_bos',
+    'whale_cluster', 'elite_whale_active',
+}
+
+_COUNT_FEATURES = {
+    'breaks_highs', 'breaks_lows', 'seeker_div_nr', 'swing_age',
+    'chain_depth', 'killed_seeker_divs', 'max_age_broken', 'min_age_broken',
+    'dist_prev_seeker_div', 'cluster_spread', 'div_width',
+}
+
+_CONTINUOUS_FEATURES = {
+    'break_depth', 'div_strength', 'whale_sentiment', 'whale_confidence',
+    'bull_pressure', 'bear_pressure', 'whale_cluster_strength',
+    'whale_cluster_dir', 'macd_line', 'htf_trend',
+}
+
+# Everything else in NUMERIC_FEATURES is treated as ratio
+
+
+def auto_extract_criteria(candle: dict) -> list:
+    """Auto-extract criteria from a candle's feature signature.
+
+    Returns criteria array [{offset: 0, features: {...}}] compatible
+    with find_matches().
+    """
+    features = {}
+
+    for feat, val in candle.items():
+        if feat in _SKIP_FEATURES:
+            continue
+        if val is None or val == '' or feat not in FEATURE_COLUMNS:
+            continue
+
+        try:
+            val = float(val)
+        except (ValueError, TypeError):
+            continue
+
+        if feat in _BINARY_FEATURES:
+            if int(val) == 1:
+                features[feat] = {'op': 'bool', 'value': 1}
+        elif feat in _COUNT_FEATURES:
+            if val > 0:
+                v = int(val)
+                features[feat] = {'op': 'range', 'min': max(0, v - 2), 'max': v + 2}
+        elif feat in _CONTINUOUS_FEATURES:
+            if val != 0:
+                tol = abs(val * 0.20)
+                features[feat] = {'op': '=', 'value': round(val, 6), 'tolerance': round(tol, 6)}
+        else:
+            # Ratio features
+            if val != 0:
+                tol = abs(val * 0.15)
+                features[feat] = {'op': '=', 'value': round(val, 6), 'tolerance': round(tol, 6)}
+
+    return [{'offset': 0, 'features': features}]
+
+
 def get_pattern_candles(meta_ts: int, lookback: int, tf: str = '1m',
                         forward: int = 5, path: str = DEFAULT_DB_PATH) -> dict:
     """Load meta candle + lookback + forward candles with all 89 features.

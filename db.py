@@ -49,7 +49,8 @@ CANDLE_COLUMNS_SQL = """
     is_seeker_hs INTEGER, is_seeker_ls INTEGER, is_seeker_div INTEGER,
     seeker_div_nr INTEGER, dist_prev_seeker_div INTEGER,
     dist_prev_seeker_div_norm REAL, is_seeker_kill INTEGER,
-    killed_seeker_divs INTEGER, candle_was_seeker INTEGER, candle_was_seeker_div INTEGER,
+    killed_seeker_divs INTEGER, killed_seeker_ts INTEGER,
+    candle_was_seeker INTEGER, candle_was_seeker_div INTEGER,
     -- Kontext/Trend (6)
     ema21_dist REAL, ema50_dist REAL, ema200_dist REAL,
     atr14 REAL, rsi14 REAL, vwap_dist REAL,
@@ -190,7 +191,8 @@ FEATURE_COLUMNS = [
     'is_seeker_hs', 'is_seeker_ls', 'is_seeker_div',
     'seeker_div_nr', 'dist_prev_seeker_div',
     'dist_prev_seeker_div_norm', 'is_seeker_kill',
-    'killed_seeker_divs', 'candle_was_seeker', 'candle_was_seeker_div',
+    'killed_seeker_divs', 'killed_seeker_ts',
+    'candle_was_seeker', 'candle_was_seeker_div',
     'ema21_dist', 'ema50_dist', 'ema200_dist',
     'atr14', 'rsi14', 'vwap_dist',
     'htf_trend', 'htf_swing_high', 'htf_swing_low', 'htf_bos',
@@ -201,9 +203,10 @@ FEATURE_COLUMNS = [
 
 # Numeric-only features for ML (no timestamp, no TEXT columns)
 NUMERIC_FEATURES = [c for c in FEATURE_COLUMNS
-                    if c not in ('timestamp', 'sw_ohlc', 'prev_swing_features', 'broken_swing_ts')]
+                    if c not in ('timestamp', 'sw_ohlc', 'prev_swing_features',
+                                 'broken_swing_ts', 'killed_seeker_ts')]
 
-assert len(FEATURE_COLUMNS) == 90, f'Expected 90 columns, got {len(FEATURE_COLUMNS)}'
+assert len(FEATURE_COLUMNS) == 91, f'Expected 91 columns, got {len(FEATURE_COLUMNS)}'
 
 
 def _connect(path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
@@ -271,15 +274,27 @@ def init_db(path: str = DEFAULT_DB_PATH) -> str:
     # Migrate: add broken_swing_ts column if missing
     for tf in TIMEFRAMES:
         table = _table_name(tf)
-        try:
-            conn.execute(f"SELECT broken_swing_ts FROM {table} LIMIT 1")
-        except sqlite3.OperationalError:
+        for col in ('broken_swing_ts', 'killed_seeker_ts'):
             try:
-                conn.execute(f"ALTER TABLE {table} ADD COLUMN broken_swing_ts INTEGER")
-                conn.commit()
-                print(f'  [DB] Added broken_swing_ts to {table}')
+                conn.execute(f"SELECT {col} FROM {table} LIMIT 1")
             except sqlite3.OperationalError:
-                pass
+                try:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} INTEGER")
+                    conn.commit()
+                    print(f'  [DB] Added {col} to {table}')
+                except sqlite3.OperationalError:
+                    pass
+
+    # Migrate: add is_reference column to saved_patterns if missing
+    try:
+        conn.execute("SELECT is_reference FROM saved_patterns LIMIT 1")
+    except sqlite3.OperationalError:
+        try:
+            conn.execute("ALTER TABLE saved_patterns ADD COLUMN is_reference INTEGER DEFAULT 0")
+            conn.commit()
+            print('  [DB] Added is_reference to saved_patterns')
+        except sqlite3.OperationalError:
+            pass
 
     # Create all TF tables
     for tf in TIMEFRAMES:
@@ -787,6 +802,108 @@ def dismiss_signal(signal_id: int, path: str = DEFAULT_DB_PATH):
         conn.execute('UPDATE pattern_signals SET dismissed = 1 WHERE id = ?',
                       (signal_id,))
         conn.commit()
+    finally:
+        conn.close()
+
+
+# ============================================================================
+# REFERENCE LIBRARY
+# ============================================================================
+
+def save_reference(ts: int, tf: str, criteria_json: str, outcome_json: str,
+                   name: str = '', path: str = DEFAULT_DB_PATH) -> int:
+    """Save a reference candle. Returns pattern id."""
+    if not name:
+        from datetime import datetime as _dt
+        t = _dt.utcfromtimestamp(ts / 1000)
+        time_str = t.strftime('%H:%M')
+        # Determine direction from outcome
+        try:
+            outcome = _json.loads(outcome_json)
+            direction = outcome.get('direction', 'NEUT')
+        except Exception:
+            direction = 'NEUT'
+        name = f'Ref_{time_str}_{direction}'
+
+    conn = _connect(path)
+    try:
+        # Ensure unique name by appending suffix if needed
+        base_name = name
+        suffix = 0
+        while True:
+            existing = conn.execute(
+                'SELECT id FROM saved_patterns WHERE name = ?', (name,)
+            ).fetchone()
+            if not existing:
+                break
+            suffix += 1
+            name = f'{base_name}_{suffix}'
+
+        conn.execute(
+            """INSERT INTO saved_patterns
+               (name, description, tf, lookback, meta_ts, criteria_json,
+                tags, is_active, is_reference, updated_at)
+               VALUES (?, ?, ?, 0, ?, ?, ?, 1, 1, datetime('now'))""",
+            (name, outcome_json, tf, ts, criteria_json, 'reference')
+        )
+        conn.commit()
+        row = conn.execute('SELECT id FROM saved_patterns WHERE name = ?',
+                           (name,)).fetchone()
+        return row[0] if row else 0
+    finally:
+        conn.close()
+
+
+def list_references(tf: str = None, limit: int = 100,
+                    path: str = DEFAULT_DB_PATH) -> list:
+    """List all references, optionally filtered by timeframe."""
+    conn = _connect(path)
+    try:
+        q = 'SELECT * FROM saved_patterns WHERE is_reference = 1'
+        params = []
+        if tf:
+            q += ' AND tf = ?'
+            params.append(tf)
+        q += ' ORDER BY created_at DESC LIMIT ?'
+        params.append(limit)
+        rows = conn.execute(q, params).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d['criteria'] = _json.loads(d['criteria_json'])
+            except Exception:
+                d['criteria'] = []
+            try:
+                d['outcome'] = _json.loads(d.get('description', '{}'))
+            except Exception:
+                d['outcome'] = {}
+            result.append(d)
+        return result
+    finally:
+        conn.close()
+
+
+def get_reference(ref_id: int, path: str = DEFAULT_DB_PATH) -> Optional[dict]:
+    """Get a single reference by id."""
+    conn = _connect(path)
+    try:
+        row = conn.execute(
+            'SELECT * FROM saved_patterns WHERE id = ? AND is_reference = 1',
+            (ref_id,)
+        ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        try:
+            d['criteria'] = _json.loads(d['criteria_json'])
+        except Exception:
+            d['criteria'] = []
+        try:
+            d['outcome'] = _json.loads(d.get('description', '{}'))
+        except Exception:
+            d['outcome'] = {}
+        return d
     finally:
         conn.close()
 

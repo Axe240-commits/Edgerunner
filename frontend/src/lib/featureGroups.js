@@ -60,7 +60,7 @@ const GROUPS = [
     id: 'seeker',
     name: 'Seeker',
     color: '#44ffaa',
-    features: ['is_seeker_hs', 'is_seeker_ls', 'is_seeker_div', 'seeker_div_nr', 'dist_prev_seeker_div', 'dist_prev_seeker_div_norm', 'is_seeker_kill', 'killed_seeker_divs', 'candle_was_seeker', 'candle_was_seeker_div'],
+    features: ['is_seeker_hs', 'is_seeker_ls', 'is_seeker_div', 'seeker_div_nr', 'dist_prev_seeker_div', 'dist_prev_seeker_div_norm', 'is_seeker_kill', 'killed_seeker_divs', 'killed_seeker_ts', 'candle_was_seeker', 'candle_was_seeker_div'],
   },
   {
     id: 'htf',
@@ -181,6 +181,7 @@ export const FEATURE_META = {
   dist_prev_seeker_div: { desc: 'Abstand zur vorherigen Seeker-Divergenz in Kerzen', tier: 3, context: 'meta' },
   dist_prev_seeker_div_norm: { desc: 'Normalisierter Abstand zur vorherigen Seeker-Div (0-1)', tier: 3, context: 'meta' },
   killed_seeker_divs: { desc: 'Anzahl gekillter Seeker-Divergenzen bei diesem Kill', tier: 3, context: 'meta' },
+  killed_seeker_ts: { desc: 'Timestamp des getöteten Seekers', tier: 3, context: 'meta' },
   candle_was_seeker: { desc: 'Diese Kerze war Ursprung eines Seeker-Zyklus', tier: 3, context: 'meta' },
   candle_was_seeker_div: { desc: 'Diese Kerze war eine Seeker-Divergenz', tier: 3, context: 'meta' },
 

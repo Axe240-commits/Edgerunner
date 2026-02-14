@@ -126,18 +126,22 @@ def compute_vwap(candles):
 # SWING DETECTION
 # =============================================================================
 
-def detect_swings(candles, lookback=5):
+def detect_swings(candles, lookback=2):
     """Detect swing highs and lows. Returns (swing_highs, swing_lows).
     Each entry: {'index': i, 'price': p, 'time': ts, 'candle': candle_dict}
+    Left neighbours use strict < / > so on ties the leftmost candle wins.
+    Right neighbours use <= / >= so the level is still recognised.
     """
     swing_highs = []
     swing_lows = []
     for i in range(lookback, len(candles) - lookback):
         h = candles[i]['high']
         l = candles[i]['low']
-        is_sh = all(candles[i - j]['high'] <= h for j in range(1, lookback + 1)) and \
+        # Left strict (<) → earlier candle with same high blocks this one
+        # Right loose (<=) → later candle with same high doesn't block
+        is_sh = all(candles[i - j]['high'] < h for j in range(1, lookback + 1)) and \
                 all(candles[i + j]['high'] <= h for j in range(1, lookback + 1))
-        is_sl = all(candles[i - j]['low'] >= l for j in range(1, lookback + 1)) and \
+        is_sl = all(candles[i - j]['low'] > l for j in range(1, lookback + 1)) and \
                 all(candles[i + j]['low'] >= l for j in range(1, lookback + 1))
         if is_sh:
             swing_highs.append({
@@ -306,7 +310,7 @@ class CandleAnalyzer:
     """Computes all 89 features for candles.
 
     Args:
-        swing_lookback: Bars left/right for swing detection (default 5)
+        swing_lookback: Bars left/right for swing detection (default 2)
         macd_fast: MACD fast EMA period (default 5)
         macd_slow: MACD slow EMA period (default 13)
         macd_signal: MACD signal period (default 1)
@@ -316,10 +320,12 @@ class CandleAnalyzer:
         seeker_min_wick: Min wick % of range for seeker detection (default 0.20)
     """
 
-    def __init__(self, swing_lookback=5, macd_fast=5, macd_slow=13, macd_signal=1,
+    def __init__(self, swing_lookback=2, seeker_swing_lookback=3,
+                 macd_fast=5, macd_slow=13, macd_signal=1,
                  rsi_period=14, atr_period=14, ema_periods=(21, 50, 200),
                  seeker_min_wick=0.20, vol_sma_period=10):
         self.swing_lookback = swing_lookback
+        self.seeker_swing_lookback = seeker_swing_lookback
         self.macd_fast = macd_fast
         self.macd_slow = macd_slow
         self.macd_signal = macd_signal
@@ -387,8 +393,15 @@ class CandleAnalyzer:
         # MACD divergences
         macd_divs = _detect_macd_divergences(raw_candles, macd_vals)
 
-        # Seeker tracking
-        seeker_features = self._compute_seekers_batch(raw_candles, swing_highs, swing_lows, sh_set, sl_set)
+        # Seeker tracking — uses stricter swing detection (lookback=3)
+        if self.seeker_swing_lookback != self.swing_lookback:
+            seeker_sh, seeker_sl = detect_swings(raw_candles, self.seeker_swing_lookback)
+            seeker_sh_set = {s['index'] for s in seeker_sh}
+            seeker_sl_set = {s['index'] for s in seeker_sl}
+        else:
+            seeker_sh, seeker_sl = swing_highs, swing_lows
+            seeker_sh_set, seeker_sl_set = sh_set, sl_set
+        seeker_features = self._compute_seekers_batch(raw_candles, seeker_sh, seeker_sl, seeker_sh_set, seeker_sl_set)
 
         # Multi-TF: HTF features default to 0 (each TF is now standalone)
         htf_default = {'htf_trend': 0, 'htf_swing_high': 0.0, 'htf_swing_low': 0.0, 'htf_bos': 0}
@@ -514,6 +527,7 @@ class CandleAnalyzer:
             f['dist_prev_seeker_div_norm'] = sk['dist_prev_seeker_div'] / 200.0 if sk['dist_prev_seeker_div'] > 0 else 0.0
             f['is_seeker_kill'] = sk['is_seeker_kill']
             f['killed_seeker_divs'] = sk['killed_seeker_divs']
+            f['killed_seeker_ts'] = sk['killed_seeker_ts']
             f['candle_was_seeker'] = sk['candle_was_seeker']
             f['candle_was_seeker_div'] = sk['candle_was_seeker_div']
 
@@ -773,7 +787,7 @@ class CandleAnalyzer:
             'is_seeker_hs': 0, 'is_seeker_ls': 0,
             'is_seeker_div': 0, 'seeker_div_nr': 0,
             'dist_prev_seeker_div': 0,
-            'is_seeker_kill': 0, 'killed_seeker_divs': 0,
+            'is_seeker_kill': 0, 'killed_seeker_divs': 0, 'killed_seeker_ts': 0,
             'candle_was_seeker': 0, 'candle_was_seeker_div': 0,
         }
         result = [dict(empty) for _ in range(n)]
@@ -803,6 +817,9 @@ class CandleAnalyzer:
                 result[i]['is_seeker_kill'] = 1
                 # Sum of divs across all killed seekers
                 result[i]['killed_seeker_divs'] = sum(len(sk['divs']) for sk in killed_seekers)
+                # Timestamp of killed seeker with most divs (most relevant)
+                best_killed = max(killed_seekers, key=lambda sk: len(sk['divs']))
+                result[i]['killed_seeker_ts'] = best_killed['candle'].get('timestamp', 0)
 
             # 2. Check for divergences on active seekers
             for sk in active_seekers:

@@ -36,7 +36,8 @@ from db import (init_db, insert_candles, count_candles, get_candle_by_ts,
                 get_candle_neighbors,
                 save_pattern, load_pattern, list_patterns, delete_pattern,
                 update_pattern_stats, save_signal, get_active_signals,
-                dismiss_signal)
+                dismiss_signal,
+                save_reference, list_references, get_reference)
 import hyperliquid_api
 
 PORT = int(sys.argv[sys.argv.index('--port') + 1]) if '--port' in sys.argv else 9998
@@ -156,8 +157,8 @@ assert len(FEATURE_NAMES) == 89, f'Expected 89 features, got {len(FEATURE_NAMES)
 
 # Swing lookback per TF
 TF_LOOKBACK = {
-    '1m': 5, '5m': 5, '15m': 3, '30m': 3,
-    '1h': 3, '4h': 3, '1d': 2, '1w': 2, '1M': 2,
+    '1m': 2, '5m': 2, '15m': 2, '30m': 2,
+    '1h': 2, '4h': 2, '1d': 2, '1w': 2, '1M': 2,
 }
 
 # How many candles to fetch per TF from Hyperliquid
@@ -316,7 +317,7 @@ if _saved:
 def _build_analyzer(tf):
     """Create a CandleAnalyzer with current settings for a specific TF."""
     lookbacks = _current_settings.get('swing_lookback', {})
-    lb = lookbacks.get(tf, TF_LOOKBACK.get(tf, 5)) if isinstance(lookbacks, dict) else 5
+    lb = lookbacks.get(tf, TF_LOOKBACK.get(tf, 2)) if isinstance(lookbacks, dict) else 2
     ema_p = _current_settings.get('ema_periods', [21, 50, 200])
     return CandleAnalyzer(
         swing_lookback=lb,
@@ -428,7 +429,7 @@ def _hyperliquid_poller():
                         })
 
                     # Swing/BOS for display
-                    lookback = TF_LOOKBACK.get(tf, 5)
+                    lookback = TF_LOOKBACK.get(tf, 2)
                     swing_highs, swing_lows = detect_swings(display_candles, lookback)
                     bos_events = detect_bos(display_candles, swing_highs, swing_lows)
 
@@ -1553,6 +1554,101 @@ class EdgerunnerHandler(http.server.BaseHTTPRequestHandler):
                 traceback.print_exc()
                 self._json({'error': str(e)}, 500)
 
+        # --- Reference Library ---
+        elif path == '/api/reference/save':
+            try:
+                params = json.loads(body.decode())
+                ref_ts = int(params.get('ts', 0))
+                ref_tf = params.get('tf', '1m')
+                ref_forward = min(int(params.get('forward_candles', 20)), 60)
+
+                if not ref_ts:
+                    self._json({'error': 'ts required'}, 400)
+                    return
+
+                # 1. Load candle from DB
+                candle = get_candle_by_ts(ref_ts, tf=ref_tf, path=_db_path)
+                if not candle:
+                    self._json({'error': 'Candle not found'}, 404)
+                    return
+
+                # 2. Auto-extract criteria
+                from pattern_matcher import auto_extract_criteria, _compute_outcome, _table_name
+                criteria_arr = auto_extract_criteria(candle)
+                features_count = len(criteria_arr[0]['features']) if criteria_arr else 0
+
+                # 3. Load forward candles and compute outcome
+                from db import _connect
+                conn = _connect(_db_path)
+                table = _table_name(ref_tf)
+                after_rows = conn.execute(
+                    f'SELECT * FROM {table} WHERE timestamp > ? ORDER BY timestamp ASC LIMIT ?',
+                    (ref_ts, ref_forward)
+                ).fetchall()
+                conn.close()
+                forward_list = [dict(r) for r in after_rows]
+                outcome = _compute_outcome(candle['close'], forward_list, ref_tf)
+
+                # 4. Save reference
+                criteria_json = json.dumps(criteria_arr)
+                outcome_json = json.dumps(outcome)
+                ref_id = save_reference(ref_ts, ref_tf, criteria_json, outcome_json, path=_db_path)
+
+                # Determine direction for name
+                direction = outcome.get('direction', 'NEUT')
+                from datetime import datetime as _dt_ref
+                t = _dt_ref.utcfromtimestamp(ref_ts / 1000)
+                time_str = t.strftime('%H:%M')
+
+                self._json({
+                    'ok': True,
+                    'ref_id': ref_id,
+                    'features_extracted': features_count,
+                    'outcome': outcome,
+                    'name': f'Ref_{time_str}_{direction}',
+                })
+            except Exception as e:
+                traceback.print_exc()
+                self._json({'error': str(e)}, 400)
+
+        elif path == '/api/reference/scan':
+            try:
+                params = json.loads(body.decode())
+                ref_id = int(params.get('ref_id', 0))
+                scan_limit = min(int(params.get('limit', 50)), 500)
+
+                ref = get_reference(ref_id, path=_db_path)
+                if not ref:
+                    self._json({'error': 'Reference not found'}, 404)
+                    return
+
+                from pattern_matcher import find_matches, compute_match_stats
+                matches = find_matches(
+                    criteria=ref['criteria'],
+                    tf=ref['tf'],
+                    limit=scan_limit,
+                    forward_candles=20,
+                    exclude_ts=ref.get('meta_ts'),
+                    path=_db_path,
+                )
+                stats = compute_match_stats(matches)
+
+                slim_matches = []
+                for m in matches:
+                    slim_matches.append({
+                        'meta': m['meta'],
+                        'outcome': m['outcome'],
+                        'score': m.get('score'),
+                    })
+
+                self._json({
+                    'matches': slim_matches,
+                    'stats': stats,
+                })
+            except Exception as e:
+                traceback.print_exc()
+                self._json({'error': str(e)}, 400)
+
         # --- Thread Control ---
         elif path == '/api/threads/control':
             user = self._get_user()
@@ -1725,6 +1821,30 @@ class EdgerunnerHandler(http.server.BaseHTTPRequestHandler):
                     self._json({'error': 'Pattern not found'}, 404)
             except Exception as e:
                 self._json({'error': str(e)}, 400)
+            return
+
+        if path == '/api/references':
+            try:
+                params = urllib.parse.parse_qs(parsed.query)
+                ref_tf = params.get('tf', [None])[0]
+                ref_limit = min(int(params.get('limit', [100])[0]), 500)
+                refs = list_references(tf=ref_tf, limit=ref_limit, path=_db_path)
+                # Slim output
+                out = []
+                for r in refs:
+                    out.append({
+                        'id': r['id'],
+                        'name': r['name'],
+                        'meta_ts': r.get('meta_ts'),
+                        'tf': r['tf'],
+                        'features_count': len(r['criteria'][0]['features']) if r.get('criteria') and len(r['criteria']) > 0 else 0,
+                        'outcome': r.get('outcome', {}),
+                        'created_at': r.get('created_at'),
+                    })
+                self._json({'references': out})
+            except Exception as e:
+                traceback.print_exc()
+                self._json({'error': str(e)}, 500)
             return
 
         if path == '/api/signals':
