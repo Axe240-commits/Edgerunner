@@ -381,7 +381,7 @@ def _hyperliquid_poller():
                     if latest_ts == _last_candle_ts_by_tf[tf]:
                         continue
 
-                    # Merge Binance volume + delta
+                    # Merge Binance SPOT + FUTURES volume/delta
                     try:
                         bv = hyperliquid_api.fetch_binance_volume(
                             tf,
@@ -389,10 +389,16 @@ def _hyperliquid_poller():
                             end_ms=candles[-1]['timestamp'] + 1,
                             limit=len(candles),
                         )
-                        if bv:
-                            hyperliquid_api.merge_binance_volume(candles, bv)
-                    except Exception as bv_err:
-                        pass  # Fall back to HL volume silently
+                        fv = hyperliquid_api.fetch_binance_futures_volume(
+                            tf,
+                            start_ms=candles[0]['timestamp'],
+                            end_ms=candles[-1]['timestamp'] + 1,
+                            limit=len(candles),
+                        )
+                        if bv or fv:
+                            hyperliquid_api.merge_binance_volume(candles, bv, fv)
+                    except Exception:
+                        pass  # Fall back silently
 
                     # Run feature engine
                     t_start = time.time()
@@ -401,6 +407,20 @@ def _hyperliquid_poller():
 
                     if not features:
                         continue
+
+                    # Carry spot/futures split metrics into feature rows
+                    src_by_ts = {c.get('timestamp'): c for c in candles}
+                    for f in features:
+                        src = src_by_ts.get(f.get('timestamp'))
+                        if not src:
+                            continue
+                        for k in (
+                            'spot_volume', 'spot_delta',
+                            'futures_volume', 'futures_delta',
+                            'futures_minus_spot_volume', 'futures_minus_spot_delta',
+                        ):
+                            if k in src:
+                                f[k] = src.get(k)
 
                     # Store to DB
                     try:
@@ -424,6 +444,12 @@ def _hyperliquid_poller():
                             'close': c['close'],
                             'volume': c['volume'],
                             'delta': c.get('delta', 0),
+                            'spot_volume': c.get('spot_volume'),
+                            'spot_delta': c.get('spot_delta'),
+                            'futures_volume': c.get('futures_volume'),
+                            'futures_delta': c.get('futures_delta'),
+                            'futures_minus_spot_volume': c.get('futures_minus_spot_volume'),
+                            'futures_minus_spot_delta': c.get('futures_minus_spot_delta'),
                             'ema21': ema21_vals[i] if i < len(ema21_vals) else c['close'],
                             'ema50': ema50_vals[i] if i < len(ema50_vals) else c['close'],
                         })
@@ -2014,6 +2040,13 @@ class EdgerunnerHandler(http.server.BaseHTTPRequestHandler):
                         'open': c['open'], 'high': c['high'],
                         'low': c['low'], 'close': c['close'],
                         'volume': c['volume'],
+                        'spot_volume': c.get('spot_volume'),
+                        'futures_volume': c.get('futures_volume'),
+                        'futures_minus_spot_volume': c.get('futures_minus_spot_volume'),
+                        'delta': c.get('delta', 0),
+                        'spot_delta': c.get('spot_delta'),
+                        'futures_delta': c.get('futures_delta'),
+                        'futures_minus_spot_delta': c.get('futures_minus_spot_delta'),
                         'ema21': c.get('ema21', 0), 'ema50': c.get('ema50', 0),
                     })
                 self._json(slim)

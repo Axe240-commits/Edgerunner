@@ -23,6 +23,7 @@ from candle_analyzer import CandleAnalyzer
 from db import (init_db, insert_candles, count_candles, get_ts_range,
                 DEFAULT_DB_PATH, TIMEFRAMES)
 from hyperliquid_api import (fetch_candles as hl_fetch, fetch_binance_volume,
+                             fetch_binance_futures_volume,
                              merge_binance_volume, INTERVAL_MS)
 
 HL_MAX_PER_REQUEST = 500
@@ -134,8 +135,19 @@ def load_history(coin='BTC', start_date=None, end_date=None,
                     end_ms=candles[-1]['timestamp'] + ims,
                     limit=BINANCE_MAX_PER_REQUEST,
                 )
-                if bv:
-                    merge_binance_volume(candles, bv)
+                fv = {}
+                try:
+                    fv = fetch_binance_futures_volume(
+                        tf,
+                        start_ms=candles[0]['timestamp'],
+                        end_ms=candles[-1]['timestamp'] + ims,
+                        limit=BINANCE_MAX_PER_REQUEST,
+                    )
+                except Exception:
+                    fv = {}
+
+                if bv or fv:
+                    merge_binance_volume(candles, bv, fv)
 
                 raw_buffer.extend(candles)
                 total_loaded += len(candles)
@@ -146,6 +158,21 @@ def load_history(coin='BTC', start_date=None, end_date=None,
                 # Analyze and store when buffer is large enough
                 if len(raw_buffer) >= batch_size or current_ms >= end_ms:
                     features = analyzer.analyze_batch(raw_buffer)
+
+                    # Carry spot/futures split metrics from raw candles into feature rows
+                    raw_by_ts = {c.get('timestamp'): c for c in raw_buffer}
+                    for f in features:
+                        src = raw_by_ts.get(f.get('timestamp'))
+                        if not src:
+                            continue
+                        for k in (
+                            'spot_volume', 'spot_delta',
+                            'futures_volume', 'futures_delta',
+                            'futures_minus_spot_volume', 'futures_minus_spot_delta',
+                        ):
+                            if k in src:
+                                f[k] = src.get(k)
+
                     insert_candles(features, tf=tf, path=db_path)
                     total_stored += len(features)
 

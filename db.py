@@ -16,9 +16,13 @@ TIMEFRAMES = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w', '1M']
 # Column definitions (shared across all TF tables)
 CANDLE_COLUMNS_SQL = """
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    -- Rohdaten (7)
+    -- Rohdaten (13)
     timestamp INTEGER UNIQUE NOT NULL,
-    open REAL, high REAL, low REAL, close REAL, volume REAL, delta REAL,
+    open REAL, high REAL, low REAL, close REAL,
+    volume REAL, delta REAL,
+    spot_volume REAL, spot_delta REAL,
+    futures_volume REAL, futures_delta REAL,
+    futures_minus_spot_volume REAL, futures_minus_spot_delta REAL,
     -- Kerzen-Anatomie (8)
     body_size REAL, upper_wick REAL, lower_wick REAL, total_range REAL,
     body_ratio REAL, wick_ratio REAL, body_position REAL, is_bullish INTEGER,
@@ -170,6 +174,9 @@ CREATE INDEX IF NOT EXISTS idx_{table}_div ON {table}(bull_div, bear_div);
 # All feature column names in DB order (excluding id)
 FEATURE_COLUMNS = [
     'timestamp', 'open', 'high', 'low', 'close', 'volume', 'delta',
+    'spot_volume', 'spot_delta',
+    'futures_volume', 'futures_delta',
+    'futures_minus_spot_volume', 'futures_minus_spot_delta',
     'body_size', 'upper_wick', 'lower_wick', 'total_range',
     'body_ratio', 'wick_ratio', 'body_position', 'is_bullish',
     'delta_pct', 'vol_vs_ma', 'delta_vs_ma',
@@ -206,7 +213,7 @@ NUMERIC_FEATURES = [c for c in FEATURE_COLUMNS
                     if c not in ('timestamp', 'sw_ohlc', 'prev_swing_features',
                                  'broken_swing_ts', 'killed_seeker_ts')]
 
-assert len(FEATURE_COLUMNS) == 91, f'Expected 91 columns, got {len(FEATURE_COLUMNS)}'
+assert len(FEATURE_COLUMNS) == 97, f'Expected 97 columns, got {len(FEATURE_COLUMNS)}'
 
 
 def _connect(path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
@@ -271,15 +278,25 @@ def init_db(path: str = DEFAULT_DB_PATH) -> str:
     # Migrate old schema first
     _migrate_old_candles_table(conn)
 
-    # Migrate: add broken_swing_ts column if missing
+    # Migrate: add missing columns per timeframe table
     for tf in TIMEFRAMES:
         table = _table_name(tf)
-        for col in ('broken_swing_ts', 'killed_seeker_ts'):
+        migrations = [
+            ('broken_swing_ts', 'INTEGER'),
+            ('killed_seeker_ts', 'INTEGER'),
+            ('spot_volume', 'REAL'),
+            ('spot_delta', 'REAL'),
+            ('futures_volume', 'REAL'),
+            ('futures_delta', 'REAL'),
+            ('futures_minus_spot_volume', 'REAL'),
+            ('futures_minus_spot_delta', 'REAL'),
+        ]
+        for col, col_type in migrations:
             try:
                 conn.execute(f"SELECT {col} FROM {table} LIMIT 1")
             except sqlite3.OperationalError:
                 try:
-                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} INTEGER")
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
                     conn.commit()
                     print(f'  [DB] Added {col} to {table}')
                 except sqlite3.OperationalError:

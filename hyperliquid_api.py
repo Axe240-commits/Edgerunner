@@ -123,6 +123,7 @@ def fetch_candles_paginated(coin='BTC', interval='1m', start_ms=None, end_ms=Non
 #   quote_vol, num_trades, taker_buy_base_vol, taker_buy_quote_vol, ignore]
 
 BINANCE_KLINES_URL = 'https://api.binance.com/api/v3/klines'
+BINANCE_FUTURES_KLINES_URL = 'https://fapi.binance.com/fapi/v1/klines'
 
 # Binance interval strings (same as HL except '1M' → '1M')
 BINANCE_INTERVAL = {
@@ -133,7 +134,7 @@ BINANCE_INTERVAL = {
 
 
 def fetch_binance_volume(interval='1m', start_ms=None, end_ms=None, limit=500):
-    """Fetch Binance BTCUSDT klines and return volume+delta map.
+    """Fetch Binance SPOT BTCUSDT klines and return volume+delta map.
 
     Returns dict: {timestamp_ms: {'volume': float_btc, 'volume_usd': float,
                                     'delta': float_btc, 'num_trades': int}}
@@ -173,16 +174,83 @@ def fetch_binance_volume(interval='1m', start_ms=None, end_ms=None, limit=500):
     return result
 
 
-def merge_binance_volume(candles, binance_vol):
-    """Merge Binance volume+delta into Hyperliquid candles (in-place).
+def fetch_binance_futures_volume(interval='1m', start_ms=None, end_ms=None, limit=500):
+    """Fetch Binance FUTURES BTCUSDT perpetual klines and return volume+delta map.
 
-    Matches by timestamp. Unmatched candles keep original HL values.
+    Returns dict: {timestamp_ms: {'volume': float_btc, 'volume_usd': float,
+                                    'delta': float_btc, 'num_trades': int}}
     """
+    now_ms = int(time.time() * 1000)
+    if end_ms is None:
+        end_ms = now_ms
+    if start_ms is None:
+        ims = INTERVAL_MS.get(interval, 60_000)
+        start_ms = end_ms - (limit * ims)
+
+    bi = BINANCE_INTERVAL.get(interval)
+    if not bi:
+        return {}
+
+    params = f'symbol=BTCUSDT&interval={bi}&startTime={start_ms}&endTime={end_ms}&limit={min(limit, 1500)}'
+    url = f'{BINANCE_FUTURES_KLINES_URL}?{params}'
+
+    req = urllib.request.Request(url, headers={'User-Agent': 'Edgerunner/1.0'})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        raw = json.loads(resp.read().decode())
+
+    result = {}
+    for k in raw:
+        ts = int(k[0])
+        vol_btc = float(k[5])
+        vol_usd = float(k[7])
+        taker_buy = float(k[9])
+        taker_sell = vol_btc - taker_buy
+        delta = taker_buy - taker_sell
+        result[ts] = {
+            'volume': vol_btc,
+            'volume_usd': vol_usd,
+            'delta': delta,
+            'num_trades': int(k[8]),
+        }
+    return result
+
+
+def merge_binance_volume(candles, spot_vol, futures_vol=None):
+    """Merge Binance spot/futures volume+delta into Hyperliquid candles (in-place).
+
+    - Keeps legacy `volume`/`delta` as spot-derived values for backward compatibility.
+    - Adds explicit fields per candle:
+      spot_volume, spot_delta, futures_volume, futures_delta,
+      futures_minus_spot_volume, futures_minus_spot_delta.
+    """
+    futures_vol = futures_vol or {}
+
     for c in candles:
-        bv = binance_vol.get(c['timestamp'])
-        if bv:
-            c['volume'] = bv['volume']
-            c['delta'] = bv['delta']
+        ts = c['timestamp']
+        sv = spot_vol.get(ts)
+        fv = futures_vol.get(ts)
+
+        if sv:
+            c['spot_volume'] = sv['volume']
+            c['spot_delta'] = sv['delta']
+            # legacy compatibility
+            c['volume'] = sv['volume']
+            c['delta'] = sv['delta']
+
+        if fv:
+            c['futures_volume'] = fv['volume']
+            c['futures_delta'] = fv['delta']
+
+        spot_v = c.get('spot_volume')
+        fut_v = c.get('futures_volume')
+        if spot_v is not None and fut_v is not None:
+            c['futures_minus_spot_volume'] = fut_v - spot_v
+
+        spot_d = c.get('spot_delta')
+        fut_d = c.get('futures_delta')
+        if spot_d is not None and fut_d is not None:
+            c['futures_minus_spot_delta'] = fut_d - spot_d
+
     return candles
 
 

@@ -161,6 +161,14 @@ export default function FeatureTab({ tf, onUseAsPattern }) {
 
   useEffect(() => { loadPage(1) }, [loadPage])
 
+  // Auto-refresh latest page so Feature Browser doesn't appear "stuck"
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (page === 1) loadPage(1)
+    }, 5000)
+    return () => clearInterval(id)
+  }, [page, loadPage])
+
   const loadCandle = useCallback(async (ts) => {
     const res = await api(`/api/db/candle/${ts}/neighbors?tf=${tf}&range=12`)
     if (res?.center) {
