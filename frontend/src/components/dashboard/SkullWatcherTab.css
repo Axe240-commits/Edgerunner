@@ -1,0 +1,269 @@
+.skull-tab {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+}
+
+.skull-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.skull-head h2 {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 14px;
+  letter-spacing: 3px;
+  color: var(--cyan);
+}
+
+.skull-meta {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.skull-cards {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(130px, 1fr));
+  gap: 8px;
+}
+
+.skull-card {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(0, 240, 255, 0.03);
+  padding: 8px 10px;
+}
+
+.skull-card .label {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  letter-spacing: 1px;
+}
+
+.skull-card .value {
+  margin-top: 4px;
+  font-family: var(--mono);
+  font-size: 15px;
+  color: var(--text);
+}
+
+.skull-card .value.warn {
+  color: var(--amber);
+}
+
+.skull-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.skull-section {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.2);
+  min-height: 220px;
+  display: flex;
+  flex-direction: column;
+}
+
+.section-title {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 2px;
+  color: var(--cyan);
+  text-transform: uppercase;
+}
+
+.skull-table-wrap {
+  overflow: auto;
+}
+
+.skull-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.skull-table th {
+  text-align: left;
+  padding: 6px 8px;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border);
+  font-size: 9px;
+  letter-spacing: 1px;
+  position: sticky;
+  top: 0;
+  background: var(--bg-panel);
+  z-index: 1;
+}
+
+.skull-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(0, 240, 255, 0.05);
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.skull-table td.empty {
+  color: var(--text-dim);
+  text-align: center;
+}
+
+.skull-feed {
+  padding: 8px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.feed-item {
+  border: 1px solid rgba(0, 240, 255, 0.15);
+  border-radius: 4px;
+  padding: 6px 8px;
+  background: rgba(0, 240, 255, 0.03);
+}
+
+.row-a {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.row-a .coin {
+  color: var(--text-dim);
+}
+
+.row-a .time {
+  margin-left: auto;
+  color: var(--text-dim);
+}
+
+.row-b {
+  margin-top: 4px;
+  display: flex;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.row-b .wallet {
+  color: var(--amber);
+  min-width: 88px;
+}
+
+.row-b .msg {
+  color: var(--text);
+}
+
+.badge {
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 9px;
+  letter-spacing: 1px;
+  border: 1px solid var(--border);
+}
+
+.type-liquidation_risk {
+  color: var(--amber);
+  border-color: rgba(255, 170, 0, 0.4);
+  background: rgba(255, 170, 0, 0.08);
+}
+
+.type-capitulation {
+  color: var(--red);
+  border-color: rgba(255, 51, 85, 0.5);
+  background: rgba(255, 51, 85, 0.08);
+}
+
+.type-full_close {
+  color: var(--green);
+  border-color: rgba(0, 255, 136, 0.45);
+  background: rgba(0, 255, 136, 0.08);
+}
+
+.type-double_down {
+  color: var(--cyan);
+  border-color: rgba(0, 240, 255, 0.45);
+  background: rgba(0, 240, 255, 0.08);
+}
+
+.up {
+  color: var(--green) !important;
+}
+
+.down {
+  color: var(--red) !important;
+}
+
+.crit {
+  color: var(--red) !important;
+}
+
+.warn {
+  color: var(--amber) !important;
+}
+
+.ok {
+  color: var(--text) !important;
+}
+
+.skull-empty,
+.feed-empty {
+  padding: 18px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.skull-dim {
+  margin-top: 6px;
+  white-space: pre-wrap;
+  color: var(--text-dim);
+}
+
+.skull-error {
+  color: var(--red);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+@media (max-width: 1280px) {
+  .skull-cards {
+    grid-template-columns: repeat(3, minmax(130px, 1fr));
+  }
+
+  .skull-body {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 860px) {
+  .skull-head {
+    flex-direction: column;
+  }
+
+  .skull-meta {
+    justify-content: flex-start;
+  }
+
+  .skull-cards {
+    grid-template-columns: repeat(2, minmax(130px, 1fr));
+  }
+}

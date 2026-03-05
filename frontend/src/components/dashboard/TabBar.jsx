@@ -5,6 +5,7 @@ const TABS = [
   { id: 'settings', label: 'SETTINGS' },
   { id: 'scenarios', label: 'SCENARIOS' },
   { id: 'features', label: 'FEATURES' },
+  { id: 'skullwatcher', label: 'SKULLWATCHER' },
   { id: 'threads', label: 'THREADS' },
 ]
 

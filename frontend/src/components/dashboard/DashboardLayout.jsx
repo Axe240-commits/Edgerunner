@@ -14,10 +14,11 @@ import DataFlowBar from './DataFlowBar'
 import SettingsTab from './SettingsTab'
 import ScenarioTab from './ScenarioTab'
 import FeatureTab from './FeatureTab'
+import SkullWatcherTab from './SkullWatcherTab'
 import ThreadTab from './ThreadTab'
 import './DashboardLayout.css'
 
-const VALID_TABS = ['overview', 'settings', 'scenarios', 'features', 'threads']
+const VALID_TABS = ['overview', 'settings', 'scenarios', 'features', 'skullwatcher', 'threads']
 
 function getInitialTab() {
   const hash = window.location.hash.replace('#', '')
@@ -114,6 +115,7 @@ export default function DashboardLayout() {
       {activeTab === 'settings' && <SettingsTab tf={tf} />}
       {activeTab === 'scenarios' && <ScenarioTab tf={tf} initialTs={patternTs} onTsClear={() => setPatternTs(null)} signals={liveSignals?.signals} />}
       {activeTab === 'features' && <FeatureTab tf={tf} onUseAsPattern={goToPattern} />}
+      {activeTab === 'skullwatcher' && <SkullWatcherTab />}
       {activeTab === 'threads' && <ThreadTab />}
     </div>
   )
