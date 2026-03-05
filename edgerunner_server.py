@@ -15,6 +15,7 @@ import json
 import math
 import os
 import random
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -23,7 +24,7 @@ import traceback
 import urllib.parse
 import urllib.request
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer
 
 # Edgerunner modules
@@ -46,6 +47,18 @@ DIST_DIR = os.path.join(DASHBOARD_DIR, 'dist')
 WHALE_DATA_PATH = os.path.expanduser(
     '~/shadow-tracker/data/deep_profiles/whale_intel_v2.json'
 )
+SHADOW_DB_CANDIDATES = [
+    os.environ.get('SHADOW_TRACKER_DB_PATH', '').strip(),
+    os.path.expanduser('~/shadow-tracker/shadow_tracker_tokyo.db'),
+    os.path.expanduser('~/shadow-tracker/shadow_tracker.db'),
+    os.path.join(
+        os.path.dirname(DASHBOARD_DIR),
+        'recovery',
+        'tokyo_full_repos_2026-03-03',
+        'shadow_tracker',
+        'shadow_tracker.db',
+    ),
+]
 
 # ============================================================================
 # GLOBAL STATE
@@ -145,7 +158,12 @@ FEATURE_NAMES = [
     'div_near_daily', 'div_strength', 'div_width',
     'is_seeker_hs', 'is_seeker_ls', 'is_seeker_div', 'seeker_div_nr',
     'dist_prev_seeker_div', 'dist_prev_seeker_div_norm', 'is_seeker_kill',
-    'killed_seeker_divs', 'candle_was_seeker', 'candle_was_seeker_div',
+    'killed_seeker_divs', 'killed_seeker_ts',
+    'killed_seekers_count', 'killed_seekers_ages',
+    'killed_seekers_oldest_ts', 'killed_seekers_newest_ts',
+    'killed_seekers_span_bars',
+    'killed_seekers_age_min', 'killed_seekers_age_max', 'killed_seekers_age_avg',
+    'candle_was_seeker', 'candle_was_seeker_div',
     'ema21_dist', 'ema50_dist', 'ema200_dist', 'atr14', 'rsi14', 'vwap_dist',
     'htf_trend', 'htf_swing_high', 'htf_swing_low', 'htf_bos',
     'whale_sentiment', 'whale_confidence', 'bull_pressure', 'bear_pressure',
@@ -153,7 +171,7 @@ FEATURE_NAMES = [
     'elite_whale_active',
 ]
 
-assert len(FEATURE_NAMES) == 89, f'Expected 89 features, got {len(FEATURE_NAMES)}'
+assert len(FEATURE_NAMES) == 98, f'Expected 98 features, got {len(FEATURE_NAMES)}'
 
 # Swing lookback per TF
 TF_LOOKBACK = {
@@ -287,6 +305,296 @@ def detect_bos(candles, swing_highs, swing_lows):
             seen.add(key)
             unique.append(e)
     return unique[-20:]
+
+
+# ============================================================================
+# SKULLWATCHER INTEGRATION (Shadow Tracker DB)
+# ============================================================================
+
+SKULL_ALERT_TYPES = ('LIQUIDATION_RISK', 'FULL_CLOSE', 'CAPITULATION', 'DOUBLE_DOWN')
+SKULL_WHALE_SIGNAL_TYPES = ('NEW_LONG', 'NEW_SHORT', 'LONG_CLOSE', 'SHORT_COVER')
+SKULL_RISK_THRESHOLD = 100000.0
+
+
+def _to_float(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _short_wallet(addr):
+    if not addr:
+        return ''
+    if len(addr) <= 14:
+        return addr
+    return f'{addr[:8]}...{addr[-4:]}'
+
+
+def _resolve_shadow_db_path():
+    for path in SHADOW_DB_CANDIDATES:
+        if path and os.path.isfile(path):
+            return path
+    return None
+
+
+def _table_exists(conn, name):
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (name,),
+    ).fetchone()
+    return bool(row)
+
+
+def _format_epoch_utc(ts):
+    tsf = _to_float(ts, 0.0)
+    if tsf <= 0:
+        return None
+    return datetime.fromtimestamp(tsf, timezone.utc).isoformat()
+
+
+def _fetch_skullwatcher_snapshot(limit_positions=30, limit_alerts=40, limit_signals=40):
+    db_path = _resolve_shadow_db_path()
+    base = {
+        'available': False,
+        'db_path': db_path,
+        'risk_threshold': SKULL_RISK_THRESHOLD,
+        'summary': {},
+        'positions': [],
+        'alerts': [],
+        'whale_signals': [],
+        'liquidations': [],
+        'capitulations': [],
+    }
+    if not db_path:
+        base['error'] = 'Shadow Tracker DB not found'
+        base['db_candidates'] = [p for p in SHADOW_DB_CANDIDATES if p]
+        return base
+
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+
+        alert_counts = {k: 0 for k in SKULL_ALERT_TYPES}
+        total_wallets = 0
+        whale_activity_count = 0
+        tracked_positions = 0
+        high_risk_positions = 0
+        recent_alerts_24h = 0
+        last_alert_at = None
+        last_whale_signal_at = None
+
+        if _table_exists(conn, 'wallets'):
+            total_wallets = conn.execute(
+                "SELECT COUNT(*) FROM wallets WHERE classification IN ('WHALE','DOLPHIN')"
+            ).fetchone()[0]
+
+        if _table_exists(conn, 'whale_activity'):
+            whale_activity_count = conn.execute(
+                'SELECT COUNT(*) FROM whale_activity'
+            ).fetchone()[0]
+
+        if _table_exists(conn, 'alerts'):
+            placeholders = ','.join('?' for _ in SKULL_ALERT_TYPES)
+            rows = conn.execute(
+                f'''SELECT alert_type, COUNT(*) AS c
+                    FROM alerts
+                    WHERE alert_type IN ({placeholders})
+                    GROUP BY alert_type''',
+                SKULL_ALERT_TYPES,
+            ).fetchall()
+            for r in rows:
+                alert_counts[r['alert_type']] = int(r['c'] or 0)
+
+            recent_alerts_24h = conn.execute(
+                f'''SELECT COUNT(*) AS c
+                    FROM alerts
+                    WHERE alert_type IN ({placeholders})
+                    AND triggered_at >= datetime('now', '-24 hours')''',
+                SKULL_ALERT_TYPES,
+            ).fetchone()['c']
+
+            last_row = conn.execute(
+                f'''SELECT triggered_at
+                    FROM alerts
+                    WHERE alert_type IN ({placeholders})
+                    ORDER BY triggered_at DESC
+                    LIMIT 1''',
+                SKULL_ALERT_TYPES,
+            ).fetchone()
+            if last_row:
+                last_alert_at = last_row['triggered_at']
+
+        positions = []
+        if _table_exists(conn, 'wallet_positions'):
+            pos_rows = conn.execute(
+                '''SELECT wp.address, wp.coin, wp.size, wp.entry_price, wp.mark_price,
+                          wp.liquidation_price, wp.leverage, wp.timestamp,
+                          COALESCE(w.classification, 'UNKNOWN') AS classification
+                   FROM wallet_positions wp
+                   LEFT JOIN wallets w ON w.address = wp.address
+                   ORDER BY wp.timestamp DESC
+                   LIMIT 500'''
+            ).fetchall()
+
+            for row in pos_rows:
+                size = _to_float(row['size'], 0.0)
+                mark_price = _to_float(row['mark_price'], 0.0)
+                entry_price = _to_float(row['entry_price'], 0.0)
+                liq_price = _to_float(row['liquidation_price'], 0.0)
+                leverage = _to_float(row['leverage'], 0.0)
+                px = mark_price if mark_price > 0 else entry_price
+                size_abs = abs(size)
+                size_usd = size_abs * px
+                direction = 'LONG' if size >= 0 else 'SHORT'
+
+                distance_pct = 999.0
+                if px > 0 and liq_price > 0:
+                    if direction == 'LONG':
+                        distance_pct = (px - liq_price) / px * 100.0
+                    else:
+                        distance_pct = (liq_price - px) / px * 100.0
+
+                risk_score = size_usd / (max(distance_pct, 0.0) + 0.1)
+                is_high_risk = risk_score >= SKULL_RISK_THRESHOLD
+                if is_high_risk:
+                    high_risk_positions += 1
+
+                positions.append({
+                    'wallet': _short_wallet(row['address']),
+                    'wallet_full': row['address'],
+                    'coin': row['coin'] or 'BTC',
+                    'classification': row['classification'],
+                    'direction': direction,
+                    'size': round(size_abs, 6),
+                    'size_usd': round(size_usd, 2),
+                    'entry_price': round(entry_price, 2),
+                    'mark_price': round(mark_price, 2),
+                    'liq_price': round(liq_price, 2),
+                    'distance_pct': round(distance_pct, 2),
+                    'risk_score': round(risk_score, 1),
+                    'leverage': round(leverage, 1),
+                    'high_risk': is_high_risk,
+                    'timestamp': row['timestamp'],
+                })
+
+        positions.sort(key=lambda x: x['risk_score'], reverse=True)
+        tracked_positions = len(positions)
+        positions = positions[:max(1, min(limit_positions, 100))]
+
+        alerts = []
+        if _table_exists(conn, 'alerts'):
+            placeholders = ','.join('?' for _ in SKULL_ALERT_TYPES)
+            alert_rows = conn.execute(
+                f'''SELECT alert_type, coin, severity, message, triggered_at, address
+                    FROM alerts
+                    WHERE alert_type IN ({placeholders})
+                    ORDER BY triggered_at DESC
+                    LIMIT ?''',
+                SKULL_ALERT_TYPES + (max(1, min(limit_alerts, 120)),),
+            ).fetchall()
+            for r in alert_rows:
+                alerts.append({
+                    'type': r['alert_type'],
+                    'coin': r['coin'] or 'BTC',
+                    'severity': r['severity'] or 'INFO',
+                    'message': r['message'] or '',
+                    'triggered_at': r['triggered_at'],
+                    'wallet': _short_wallet(r['address']),
+                    'wallet_full': r['address'],
+                })
+
+        whale_signals = []
+        if _table_exists(conn, 'whale_activity'):
+            placeholders = ','.join('?' for _ in SKULL_WHALE_SIGNAL_TYPES)
+            signal_rows = conn.execute(
+                f'''SELECT timestamp, coin, side, signal_type, notional_usd,
+                          wallet_address, tier, win_rate, price_at_event
+                    FROM whale_activity
+                    WHERE signal_type IN ({placeholders})
+                    ORDER BY timestamp DESC
+                    LIMIT ?''',
+                SKULL_WHALE_SIGNAL_TYPES + (max(1, min(limit_signals, 120)),),
+            ).fetchall()
+            for r in signal_rows:
+                ts = _to_float(r['timestamp'], 0.0)
+                whale_signals.append({
+                    'timestamp': ts,
+                    'timestamp_iso': _format_epoch_utc(ts),
+                    'coin': r['coin'] or 'BTC',
+                    'side': r['side'] or '',
+                    'signal_type': r['signal_type'] or '',
+                    'notional_usd': round(_to_float(r['notional_usd'], 0.0), 2),
+                    'wallet': _short_wallet(r['wallet_address']),
+                    'wallet_full': r['wallet_address'],
+                    'tier': r['tier'] or 'UNPROVEN',
+                    'win_rate': round(_to_float(r['win_rate'], 0.0), 4),
+                    'price_at_event': round(_to_float(r['price_at_event'], 0.0), 2),
+                })
+            if whale_signals:
+                last_whale_signal_at = whale_signals[0]['timestamp_iso']
+
+        liquidations = []
+        if _table_exists(conn, 'liquidation_events'):
+            liq_rows = conn.execute(
+                '''SELECT event_time, coin, direction, liq_price, position_size_usd,
+                          price_at_event, is_cascade_part
+                   FROM liquidation_events
+                   ORDER BY event_time DESC
+                   LIMIT 40'''
+            ).fetchall()
+            liquidations = [dict(r) for r in liq_rows]
+
+        capitulations = []
+        if _table_exists(conn, 'capitulation_events'):
+            cap_rows = conn.execute(
+                '''SELECT timestamp, coin, capitulation_type, capitulation_size_usd,
+                          counter_direction, pnl_15m
+                   FROM capitulation_events
+                   ORDER BY timestamp DESC
+                   LIMIT 40'''
+            ).fetchall()
+            capitulations = [dict(r) for r in cap_rows]
+
+        size_bytes = os.path.getsize(db_path) if os.path.exists(db_path) else 0
+        db_mtime = None
+        if os.path.exists(db_path):
+            db_mtime = datetime.fromtimestamp(
+                os.path.getmtime(db_path), timezone.utc
+            ).isoformat()
+
+        return {
+            'available': True,
+            'db_path': db_path,
+            'db_size_mb': round(size_bytes / (1024 * 1024), 2),
+            'db_updated_at': db_mtime,
+            'risk_threshold': SKULL_RISK_THRESHOLD,
+            'summary': {
+                'wallet_count': total_wallets,
+                'whale_activity_count': whale_activity_count,
+                'tracked_positions': tracked_positions,
+                'high_risk_positions': high_risk_positions,
+                'recent_alerts_24h': int(recent_alerts_24h or 0),
+                'alert_counts': alert_counts,
+                'last_alert_at': last_alert_at,
+                'last_whale_signal_at': last_whale_signal_at,
+            },
+            'positions': positions,
+            'alerts': alerts,
+            'whale_signals': whale_signals,
+            'liquidations': liquidations,
+            'capitulations': capitulations,
+        }
+
+    except Exception as e:
+        return {
+            **base,
+            'error': str(e),
+        }
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 # ============================================================================
@@ -829,7 +1137,14 @@ def _build_candle_analysis(candle_data, lookback_count):
         ds = m.get('div_strength', 0) or 0
         events.append(f'BAERISCHE DIVERGENZ (Staerke: {ds:.4f}) — Preis steigt aber MACD faellt')
     if m.get('is_seeker_kill'):
-        events.append(f'SEEKER KILL — {m.get("killed_seeker_divs", 0)} Seeker-Div(s) invalidiert')
+        cnt = int(m.get('killed_seekers_count', 0) or 0)
+        age_min = int(m.get('killed_seekers_age_min', 0) or 0)
+        age_avg = float(m.get('killed_seekers_age_avg', 0) or 0)
+        age_max = int(m.get('killed_seekers_age_max', 0) or 0)
+        span = int(m.get('killed_seekers_span_bars', 0) or 0)
+        events.append(
+            f'SEEKER KILL — x{cnt} | Age min/avg/max: {age_min}/{age_avg:.1f}/{age_max} bars | Span: {span} bars | {m.get("killed_seeker_divs", 0)} Seeker-Div(s) invalidiert'
+        )
     if m.get('is_seeker_div'):
         events.append(f'SEEKER DIVERGENZ #{m.get("seeker_div_nr", 0)} aktiv')
 
@@ -1964,6 +2279,23 @@ class EdgerunnerHandler(http.server.BaseHTTPRequestHandler):
             except Exception as e:
                 traceback.print_exc()
                 self._json({'error': str(e)}, 500)
+            return
+
+        if path == '/api/skullwatcher':
+            try:
+                params = urllib.parse.parse_qs(parsed.query)
+                limit_positions = int(params.get('positions', [30])[0])
+                limit_alerts = int(params.get('alerts', [40])[0])
+                limit_signals = int(params.get('signals', [40])[0])
+                snapshot = _fetch_skullwatcher_snapshot(
+                    limit_positions=limit_positions,
+                    limit_alerts=limit_alerts,
+                    limit_signals=limit_signals,
+                )
+                self._json(snapshot)
+            except Exception as e:
+                traceback.print_exc()
+                self._json({'available': False, 'error': str(e)}, 500)
             return
 
         if path == '/api/db/candles':

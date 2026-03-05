@@ -528,6 +528,14 @@ class CandleAnalyzer:
             f['is_seeker_kill'] = sk['is_seeker_kill']
             f['killed_seeker_divs'] = sk['killed_seeker_divs']
             f['killed_seeker_ts'] = sk['killed_seeker_ts']
+            f['killed_seekers_count'] = sk['killed_seekers_count']
+            f['killed_seekers_ages'] = sk['killed_seekers_ages']
+            f['killed_seekers_oldest_ts'] = sk['killed_seekers_oldest_ts']
+            f['killed_seekers_newest_ts'] = sk['killed_seekers_newest_ts']
+            f['killed_seekers_span_bars'] = sk['killed_seekers_span_bars']
+            f['killed_seekers_age_min'] = sk['killed_seekers_age_min']
+            f['killed_seekers_age_max'] = sk['killed_seekers_age_max']
+            f['killed_seekers_age_avg'] = sk['killed_seekers_age_avg']
             f['candle_was_seeker'] = sk['candle_was_seeker']
             f['candle_was_seeker_div'] = sk['candle_was_seeker_div']
 
@@ -788,6 +796,11 @@ class CandleAnalyzer:
             'is_seeker_div': 0, 'seeker_div_nr': 0,
             'dist_prev_seeker_div': 0,
             'is_seeker_kill': 0, 'killed_seeker_divs': 0, 'killed_seeker_ts': 0,
+            'killed_seekers_count': 0, 'killed_seekers_ages': '[]',
+            'killed_seekers_oldest_ts': 0, 'killed_seekers_newest_ts': 0,
+            'killed_seekers_span_bars': 0,
+            'killed_seekers_age_min': 0, 'killed_seekers_age_max': 0,
+            'killed_seekers_age_avg': 0.0,
             'candle_was_seeker': 0, 'candle_was_seeker_div': 0,
         }
         result = [dict(empty) for _ in range(n)]
@@ -815,11 +828,31 @@ class CandleAnalyzer:
 
             if killed_seekers:
                 result[i]['is_seeker_kill'] = 1
+                result[i]['killed_seekers_count'] = len(killed_seekers)
+
                 # Sum of divs across all killed seekers
                 result[i]['killed_seeker_divs'] = sum(len(sk['divs']) for sk in killed_seekers)
-                # Timestamp of killed seeker with most divs (most relevant)
+
+                # Keep backward-compatible representative ts (most divs)
                 best_killed = max(killed_seekers, key=lambda sk: len(sk['divs']))
                 result[i]['killed_seeker_ts'] = best_killed['candle'].get('timestamp', 0)
+
+                # Full kill age/time window stats for Battle Card + later analysis
+                ages = [max(0, i - sk.get('index', i)) for sk in killed_seekers]
+                origin_ts = [int(sk['candle'].get('timestamp', 0) or 0) for sk in killed_seekers]
+                origin_ts = [t for t in origin_ts if t > 0]
+
+                result[i]['killed_seekers_ages'] = json.dumps(ages)
+                result[i]['killed_seekers_age_min'] = min(ages) if ages else 0
+                result[i]['killed_seekers_age_max'] = max(ages) if ages else 0
+                result[i]['killed_seekers_age_avg'] = (sum(ages) / len(ages)) if ages else 0.0
+
+                if origin_ts:
+                    result[i]['killed_seekers_oldest_ts'] = min(origin_ts)
+                    result[i]['killed_seekers_newest_ts'] = max(origin_ts)
+
+                if ages:
+                    result[i]['killed_seekers_span_bars'] = max(ages) - min(ages)
 
             # 2. Check for divergences on active seekers
             for sk in active_seekers:

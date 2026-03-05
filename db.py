@@ -54,6 +54,11 @@ CANDLE_COLUMNS_SQL = """
     seeker_div_nr INTEGER, dist_prev_seeker_div INTEGER,
     dist_prev_seeker_div_norm REAL, is_seeker_kill INTEGER,
     killed_seeker_divs INTEGER, killed_seeker_ts INTEGER,
+    killed_seekers_count INTEGER, killed_seekers_ages TEXT,
+    killed_seekers_oldest_ts INTEGER, killed_seekers_newest_ts INTEGER,
+    killed_seekers_span_bars INTEGER,
+    killed_seekers_age_min INTEGER, killed_seekers_age_max INTEGER,
+    killed_seekers_age_avg REAL,
     candle_was_seeker INTEGER, candle_was_seeker_div INTEGER,
     -- Kontext/Trend (6)
     ema21_dist REAL, ema50_dist REAL, ema200_dist REAL,
@@ -199,6 +204,10 @@ FEATURE_COLUMNS = [
     'seeker_div_nr', 'dist_prev_seeker_div',
     'dist_prev_seeker_div_norm', 'is_seeker_kill',
     'killed_seeker_divs', 'killed_seeker_ts',
+    'killed_seekers_count', 'killed_seekers_ages',
+    'killed_seekers_oldest_ts', 'killed_seekers_newest_ts',
+    'killed_seekers_span_bars',
+    'killed_seekers_age_min', 'killed_seekers_age_max', 'killed_seekers_age_avg',
     'candle_was_seeker', 'candle_was_seeker_div',
     'ema21_dist', 'ema50_dist', 'ema200_dist',
     'atr14', 'rsi14', 'vwap_dist',
@@ -211,9 +220,9 @@ FEATURE_COLUMNS = [
 # Numeric-only features for ML (no timestamp, no TEXT columns)
 NUMERIC_FEATURES = [c for c in FEATURE_COLUMNS
                     if c not in ('timestamp', 'sw_ohlc', 'prev_swing_features',
-                                 'broken_swing_ts', 'killed_seeker_ts')]
+                                 'broken_swing_ts', 'killed_seeker_ts', 'killed_seekers_ages')]
 
-assert len(FEATURE_COLUMNS) == 97, f'Expected 97 columns, got {len(FEATURE_COLUMNS)}'
+assert len(FEATURE_COLUMNS) == 105, f'Expected 105 columns, got {len(FEATURE_COLUMNS)}'
 
 
 def _connect(path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
@@ -290,6 +299,14 @@ def init_db(path: str = DEFAULT_DB_PATH) -> str:
             ('futures_delta', 'REAL'),
             ('futures_minus_spot_volume', 'REAL'),
             ('futures_minus_spot_delta', 'REAL'),
+            ('killed_seekers_count', 'INTEGER'),
+            ('killed_seekers_ages', 'TEXT'),
+            ('killed_seekers_oldest_ts', 'INTEGER'),
+            ('killed_seekers_newest_ts', 'INTEGER'),
+            ('killed_seekers_span_bars', 'INTEGER'),
+            ('killed_seekers_age_min', 'INTEGER'),
+            ('killed_seekers_age_max', 'INTEGER'),
+            ('killed_seekers_age_avg', 'REAL'),
         ]
         for col, col_type in migrations:
             try:
