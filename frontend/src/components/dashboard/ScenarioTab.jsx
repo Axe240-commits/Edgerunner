@@ -173,8 +173,16 @@ function CandleSlot({ candle, label, selected, isMeta, criteriaCount, onClick, o
   // SW HIGH/LOW shown as prominent banner below, not as small tag
 
   // Divergences
-  if (c.bull_div) tags.push({ l: `DIV+ ${(c.div_strength || 0).toFixed(2)}`, c: '#44ffaa' })
-  if (c.bear_div) tags.push({ l: `DIV- ${(c.div_strength || 0).toFixed(2)}`, c: '#aa44ff' })
+  if (c.bull_div) {
+    const streak = Number(c.bull_div_streak || 0)
+    const streakLabel = streak > 1 ? ` x${streak}` : ''
+    tags.push({ l: `DIV+${streakLabel} ${(c.div_strength || 0).toFixed(2)}`, c: '#44ffaa' })
+  }
+  if (c.bear_div) {
+    const streak = Number(c.bear_div_streak || 0)
+    const streakLabel = streak > 1 ? ` x${streak}` : ''
+    tags.push({ l: `DIV-${streakLabel} ${(c.div_strength || 0).toFixed(2)}`, c: '#aa44ff' })
+  }
 
   // Seeker
   if (c.is_seeker_div) {

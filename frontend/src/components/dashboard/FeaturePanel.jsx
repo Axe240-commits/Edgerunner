@@ -16,14 +16,14 @@ export default function FeaturePanel({ features, status }) {
     }
   }, [features])
 
-  const computed = status?.computed || 89
+  const computed = status?.computed || 115
   const ms = status?.processing_ms?.toFixed(1) || '0.0'
 
   return (
     <div className="panel" style={{ gridColumn: 3, gridRow: 2 }}>
       <div className="panel-title">Feature Engine</div>
       <div className="feature-progress">
-        <span>{computed}/89 computed</span>
+        <span>{computed}/{computed} computed</span>
         <span>[{'█'.repeat(16)}] {ms}ms</span>
       </div>
       <div className="feature-list" ref={listRef}>

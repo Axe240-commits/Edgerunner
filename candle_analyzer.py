@@ -14,7 +14,7 @@ Feature groups:
   35-47 Paarung           — breaker vs swing candle comparison
   48-50 Kette             — recursive break chains
   51-53 Cluster           — simultaneous breaks
-  54-61 MACD + Div        — Eddiecator formula
+  54-61 MACD + Div        — Dumb Money / Eddiecator port
   62-71 Seeker            — ported from seeker_theory.py
   72-77 Kontext/Trend     — EMAs, ATR, RSI, VWAP
   78-81 Multi-TF          — 15m/1h aggregation
@@ -200,6 +200,33 @@ def _seeker_wick_zone(candle, seeker_type):
         return (body_low, candle['low'])  # (top, bottom)
 
 
+def _seeker_zone_metrics(candle, seeker_type):
+    """Canonical seeker zone shape metrics for inspector/context display."""
+    zone_top, zone_bottom = _seeker_wick_zone(candle, seeker_type)
+    top = max(zone_top, zone_bottom)
+    bottom = min(zone_top, zone_bottom)
+    zone_size = top - bottom
+
+    body_high = max(candle['open'], candle['close'])
+    body_low = min(candle['open'], candle['close'])
+    body_size = abs(candle['close'] - candle['open'])
+    total_range = max(1e-8, candle['high'] - candle['low'])
+    upper_wick = candle['high'] - body_high
+    lower_wick = body_low - candle['low']
+
+    dominant_wick = upper_wick if seeker_type == 'HS' else lower_wick
+    opposite_wick = lower_wick if seeker_type == 'HS' else upper_wick
+
+    return {
+        'seeker_zone_top': top,
+        'seeker_zone_bottom': bottom,
+        'seeker_zone_size': zone_size,
+        'seeker_zone_pct_of_range': zone_size / total_range if total_range > 0 else 0.0,
+        'seeker_zone_vs_body': zone_size / max(body_size, 1e-8),
+        'seeker_wick_dominance': dominant_wick / max(opposite_wick, 1e-8),
+    }
+
+
 def _check_seeker_div(seeker_candle, seeker_type, test_candle):
     """Check if test_candle creates a divergence in the seeker's wick zone.
     HS div: candle touches zone + body_high > seeker.body_high
@@ -231,75 +258,159 @@ def _check_seeker_kill(seeker_candle, seeker_type, test_candle):
 
 
 # =============================================================================
-# MACD DIVERGENCE DETECTION (Eddiecator formula)
+# MACD DIVERGENCE DETECTION (ported from Dumb Money.mq4)
 # =============================================================================
 
-def _find_macd_peaks_troughs(macd_vals):
-    """Find MACD peaks (local max > 0) and troughs (local min < 0).
-    Peak: 2+ bars falling in each direction, all above 0.
-    Trough: 2+ bars rising in each direction, all below 0.
-    Returns (peaks, troughs) — lists of {'index': i, 'value': v}
-    """
-    peaks = []
-    troughs = []
-    for i in range(2, len(macd_vals) - 2):
-        v = macd_vals[i]
-        # Peak: above 0, higher than neighbors
-        if v > 0 and macd_vals[i-1] < v and macd_vals[i-2] < macd_vals[i-1] and \
-           macd_vals[i+1] < v and macd_vals[i+2] < macd_vals[i+1]:
-            peaks.append({'index': i, 'value': v})
-        # Trough: below 0, lower than neighbors
-        if v < 0 and macd_vals[i-1] > v and macd_vals[i-2] > macd_vals[i-1] and \
-           macd_vals[i+1] > v and macd_vals[i+2] > macd_vals[i+1]:
-            troughs.append({'index': i, 'value': v})
-    return peaks, troughs
+def _mt4_shift_to_index(series_len, shift):
+    """Convert MT4 series index (0=newest) to chronological Python index."""
+    return series_len - 1 - shift
 
 
-def _detect_macd_divergences(candles, macd_vals):
-    """Detect bull/bear MACD divergences using Eddiecator formula.
-    Bull div: Price Lower Low + MACD Higher Low (troughs)
-    Bear div: Price Higher High + MACD Lower High (peaks)
-    Returns per-candle: list of {'bull_div': 0/1, 'bear_div': 0/1, 'div_strength': f, 'div_width': n}
-    """
+def _is_indicator_peak_dumb_money(mt4_macd, shift):
+    """Port of Dumb Money.mq4 IsIndicatorPeak() on MT4-style MACD arrays."""
+    n = len(mt4_macd)
+    if shift + 3 >= n:
+        return False
+    if not (
+        mt4_macd[shift + 3] > 0
+        and mt4_macd[shift] > mt4_macd[shift + 1]
+        and mt4_macd[shift + 1] > mt4_macd[shift + 2]
+        and mt4_macd[shift + 2] > mt4_macd[shift + 3]
+    ):
+        return False
+    for i in range(shift + 1, n):
+        if mt4_macd[i] > 0:
+            return True
+        if mt4_macd[i] > mt4_macd[shift]:
+            break
+    return False
+
+
+def _is_indicator_trough_dumb_money(mt4_macd, shift):
+    """Port of Dumb Money.mq4 IsIndicatorTrough() on MT4-style MACD arrays."""
+    n = len(mt4_macd)
+    if shift + 3 >= n:
+        return False
+    if not (
+        mt4_macd[shift + 3] < 0
+        and mt4_macd[shift] < mt4_macd[shift + 1]
+        and mt4_macd[shift + 1] < mt4_macd[shift + 2]
+        and mt4_macd[shift + 2] < mt4_macd[shift + 3]
+    ):
+        return False
+    for i in range(shift + 1, n):
+        if mt4_macd[i] < 0:
+            return True
+        if mt4_macd[i] < mt4_macd[shift]:
+            break
+    return False
+
+
+def _get_indicator_last_peak_dumb_money(mt4_macd, shift):
+    """Port of Dumb Money.mq4 GetIndicatorLastPeak() on MT4-style MACD arrays."""
+    n = len(mt4_macd)
+    for i in range(shift + 5, n - 3):
+        if (
+            mt4_macd[i + 2] > 0
+            and mt4_macd[i] >= mt4_macd[i + 1]
+            and mt4_macd[i + 1] > mt4_macd[i + 2]
+            and mt4_macd[i + 2] > mt4_macd[i + 3]
+            and mt4_macd[i] >= mt4_macd[i - 1]
+            and mt4_macd[i - 1] > mt4_macd[i - 2]
+            and mt4_macd[i - 2] > 0
+        ):
+            return i
+    return -1
+
+
+def _get_indicator_last_trough_dumb_money(mt4_macd, shift):
+    """Port of Dumb Money.mq4 GetIndicatorLastTrough() on MT4-style MACD arrays."""
+    n = len(mt4_macd)
+    for i in range(shift + 5, n - 3):
+        if (
+            mt4_macd[i + 2] < 0
+            and mt4_macd[i] <= mt4_macd[i + 1]
+            and mt4_macd[i + 1] < mt4_macd[i + 2]
+            and mt4_macd[i + 2] < mt4_macd[i + 3]
+            and mt4_macd[i] <= mt4_macd[i - 1]
+            and mt4_macd[i - 1] < mt4_macd[i - 2]
+            and mt4_macd[i - 2] < 0
+        ):
+            return i
+    return -1
+
+
+def _extract_dumb_money_macd_features(candles, macd_vals):
+    """Return Dumb-Money-style peaks, troughs, divergences, and divergence streaks."""
     n = len(candles)
-    divs = [{'bull_div': 0, 'bear_div': 0, 'div_strength': 0.0, 'div_width': 0} for _ in range(n)]
-    peaks, troughs = _find_macd_peaks_troughs(macd_vals)
+    divs = [
+        {
+            'bull_div': 0,
+            'bear_div': 0,
+            'div_strength': 0.0,
+            'div_width': 0,
+            'bull_div_streak': 0,
+            'bear_div_streak': 0,
+        }
+        for _ in range(n)
+    ]
+    if n < 7:
+        return set(), set(), divs
 
-    # Bear divergences: compare consecutive peaks
-    for j in range(1, len(peaks)):
-        p1 = peaks[j - 1]
-        p2 = peaks[j]
-        i1, i2 = p1['index'], p2['index']
-        if i2 >= n or i1 >= n:
-            continue
-        # Price HH + MACD LH
-        price_hh = candles[i2]['high'] > candles[i1]['high']
-        macd_lh = p2['value'] < p1['value']
-        if price_hh and macd_lh:
-            width = i2 - i1
-            strength = abs(p1['value'] - p2['value']) / max(abs(p1['value']), 1e-8)
-            divs[i2]['bear_div'] = 1
-            divs[i2]['div_strength'] = min(1.0, strength)
-            divs[i2]['div_width'] = width
+    mt4_macd = list(reversed(macd_vals))
+    mt4_candles = list(reversed(candles))
+    peak_indices = set()
+    trough_indices = set()
 
-    # Bull divergences: compare consecutive troughs
-    for j in range(1, len(troughs)):
-        t1 = troughs[j - 1]
-        t2 = troughs[j]
-        i1, i2 = t1['index'], t2['index']
-        if i2 >= n or i1 >= n:
-            continue
-        # Price LL + MACD HL
-        price_ll = candles[i2]['low'] < candles[i1]['low']
-        macd_hl = t2['value'] > t1['value']  # HL = less negative
-        if price_ll and macd_hl:
-            width = i2 - i1
-            strength = abs(t1['value'] - t2['value']) / max(abs(t1['value']), 1e-8)
-            divs[i2]['bull_div'] = 1
-            divs[i2]['div_strength'] = max(divs[i2]['div_strength'], min(1.0, strength))
-            divs[i2]['div_width'] = max(divs[i2]['div_width'], width)
+    for shift in range(n):
+        current_index = _mt4_shift_to_index(n, shift)
 
-    return divs
+        if _is_indicator_peak_dumb_money(mt4_macd, shift):
+            peak_indices.add(current_index)
+            last_peak = _get_indicator_last_peak_dumb_money(mt4_macd, shift)
+            if last_peak >= 0:
+                if (
+                    mt4_macd[shift] < mt4_macd[last_peak]
+                    and mt4_candles[shift]['high'] > mt4_candles[last_peak]['high']
+                ):
+                    width = last_peak - shift
+                    strength = abs(mt4_macd[last_peak] - mt4_macd[shift]) / max(abs(mt4_macd[last_peak]), 1e-8)
+                    divs[current_index]['bear_div'] = 1
+                    divs[current_index]['div_strength'] = min(1.0, strength)
+                    divs[current_index]['div_width'] = width
+
+        if _is_indicator_trough_dumb_money(mt4_macd, shift):
+            trough_indices.add(current_index)
+            last_trough = _get_indicator_last_trough_dumb_money(mt4_macd, shift)
+            if last_trough >= 0:
+                if (
+                    mt4_macd[shift] > mt4_macd[last_trough]
+                    and mt4_candles[shift]['low'] < mt4_candles[last_trough]['low']
+                ):
+                    width = last_trough - shift
+                    strength = abs(mt4_macd[last_trough] - mt4_macd[shift]) / max(abs(mt4_macd[last_trough]), 1e-8)
+                    divs[current_index]['bull_div'] = 1
+                    divs[current_index]['div_strength'] = max(
+                        divs[current_index]['div_strength'],
+                        min(1.0, strength),
+                    )
+                    divs[current_index]['div_width'] = max(divs[current_index]['div_width'], width)
+
+    bull_streak = 0
+    bear_streak = 0
+    for item in divs:
+        if item['bull_div']:
+            bull_streak += 1
+        else:
+            bull_streak = 0
+        if item['bear_div']:
+            bear_streak += 1
+        else:
+            bear_streak = 0
+        item['bull_div_streak'] = bull_streak
+        item['bear_div_streak'] = bear_streak
+
+    return peak_indices, trough_indices, divs
 
 
 # =============================================================================
@@ -320,7 +431,7 @@ class CandleAnalyzer:
         seeker_min_wick: Min wick % of range for seeker detection (default 0.20)
     """
 
-    def __init__(self, swing_lookback=2, seeker_swing_lookback=3,
+    def __init__(self, swing_lookback=2, seeker_swing_lookback=2,
                  macd_fast=5, macd_slow=13, macd_signal=1,
                  rsi_period=14, atr_period=14, ema_periods=(21, 50, 200),
                  seeker_min_wick=0.20, vol_sma_period=10):
@@ -377,23 +488,10 @@ class CandleAnalyzer:
         # BOS detection with enhanced data
         bos_data = self._compute_bos_full(raw_candles, swing_highs, swing_lows)
 
-        # MACD peak/trough detection
-        macd_peaks_set = set()
-        macd_troughs_set = set()
-        for i in range(3, n):
-            # Peak: 3 falling bars, all > 0 (from PLAN.md Eddiecator formula)
-            if (macd_vals[i] > 0 and macd_vals[i] < macd_vals[i-1] < macd_vals[i-2] < macd_vals[i-3]
-                    and macd_vals[i-1] > 0 and macd_vals[i-2] > 0 and macd_vals[i-3] > 0):
-                macd_peaks_set.add(i - 1)  # Peak was at i-1 (before the 3 falling)
-            # Trough: 3 rising bars, all < 0
-            if (macd_vals[i] < 0 and macd_vals[i] > macd_vals[i-1] > macd_vals[i-2] > macd_vals[i-3]
-                    and macd_vals[i-1] < 0 and macd_vals[i-2] < 0 and macd_vals[i-3] < 0):
-                macd_troughs_set.add(i - 1)
+        # MACD peaks/troughs/divergences — exact Dumb Money port on MT4 shift logic
+        macd_peaks_set, macd_troughs_set, macd_divs = _extract_dumb_money_macd_features(raw_candles, macd_vals)
 
-        # MACD divergences
-        macd_divs = _detect_macd_divergences(raw_candles, macd_vals)
-
-        # Seeker tracking — uses stricter swing detection (lookback=3)
+        # Seeker tracking — runs on its own swing lookback
         if self.seeker_swing_lookback != self.swing_lookback:
             seeker_sh, seeker_sl = detect_swings(raw_candles, self.seeker_swing_lookback)
             seeker_sh_set = {s['index'] for s in seeker_sh}
@@ -513,6 +611,8 @@ class CandleAnalyzer:
             md = macd_divs[i]
             f['bull_div'] = md['bull_div']
             f['bear_div'] = md['bear_div']
+            f['bull_div_streak'] = md['bull_div_streak']
+            f['bear_div_streak'] = md['bear_div_streak']
             f['div_near_daily'] = 0  # TODO: needs daily H/L data
             f['div_strength'] = md['div_strength']
             f['div_width'] = md['div_width']
@@ -522,6 +622,8 @@ class CandleAnalyzer:
             f['is_seeker_hs'] = sk['is_seeker_hs']
             f['is_seeker_ls'] = sk['is_seeker_ls']
             f['is_seeker_div'] = sk['is_seeker_div']
+            f['is_seeker_div_hs'] = sk['is_seeker_div_hs']
+            f['is_seeker_div_ls'] = sk['is_seeker_div_ls']
             f['seeker_div_nr'] = sk['seeker_div_nr']
             f['dist_prev_seeker_div'] = sk['dist_prev_seeker_div']
             f['dist_prev_seeker_div_norm'] = sk['dist_prev_seeker_div'] / 200.0 if sk['dist_prev_seeker_div'] > 0 else 0.0
@@ -538,6 +640,12 @@ class CandleAnalyzer:
             f['killed_seekers_age_avg'] = sk['killed_seekers_age_avg']
             f['candle_was_seeker'] = sk['candle_was_seeker']
             f['candle_was_seeker_div'] = sk['candle_was_seeker_div']
+            f['seeker_zone_top'] = sk['seeker_zone_top']
+            f['seeker_zone_bottom'] = sk['seeker_zone_bottom']
+            f['seeker_zone_size'] = sk['seeker_zone_size']
+            f['seeker_zone_pct_of_range'] = sk['seeker_zone_pct_of_range']
+            f['seeker_zone_vs_body'] = sk['seeker_zone_vs_body']
+            f['seeker_wick_dominance'] = sk['seeker_wick_dominance']
 
             # --- Kontext/Trend (72-77) ---
             f['ema21_dist'] = (c['close'] - ema21[i]) / atr if i < len(ema21) else 0.0
@@ -793,7 +901,7 @@ class CandleAnalyzer:
         n = len(candles)
         empty = {
             'is_seeker_hs': 0, 'is_seeker_ls': 0,
-            'is_seeker_div': 0, 'seeker_div_nr': 0,
+            'is_seeker_div': 0, 'is_seeker_div_hs': 0, 'is_seeker_div_ls': 0, 'seeker_div_nr': 0,
             'dist_prev_seeker_div': 0,
             'is_seeker_kill': 0, 'killed_seeker_divs': 0, 'killed_seeker_ts': 0,
             'killed_seekers_count': 0, 'killed_seekers_ages': '[]',
@@ -802,6 +910,9 @@ class CandleAnalyzer:
             'killed_seekers_age_min': 0, 'killed_seekers_age_max': 0,
             'killed_seekers_age_avg': 0.0,
             'candle_was_seeker': 0, 'candle_was_seeker_div': 0,
+            'seeker_zone_top': 0.0, 'seeker_zone_bottom': 0.0,
+            'seeker_zone_size': 0.0, 'seeker_zone_pct_of_range': 0.0,
+            'seeker_zone_vs_body': 0.0, 'seeker_wick_dominance': 0.0,
         }
         result = [dict(empty) for _ in range(n)]
 
@@ -815,6 +926,8 @@ class CandleAnalyzer:
 
         for i in range(n):
             c = candles[i]
+            zone_candidate = None
+            zone_priority = (-1, -1)
 
             # 1. Check kills first
             killed_seekers = []
@@ -836,6 +949,8 @@ class CandleAnalyzer:
                 # Keep backward-compatible representative ts (most divs)
                 best_killed = max(killed_seekers, key=lambda sk: len(sk['divs']))
                 result[i]['killed_seeker_ts'] = best_killed['candle'].get('timestamp', 0)
+                zone_candidate = best_killed.get('zone_metrics')
+                zone_priority = (len(best_killed['divs']), i - best_killed.get('index', i))
 
                 # Full kill age/time window stats for Battle Card + later analysis
                 ages = [max(0, i - sk.get('index', i)) for sk in killed_seekers]
@@ -860,27 +975,44 @@ class CandleAnalyzer:
                     sk['divs'].append(i)
                     sk['div_indices'].append(i)
                     result[i]['is_seeker_div'] = 1
+                    if sk['type'] == 'HS':
+                        result[i]['is_seeker_div_hs'] = 1
+                    else:
+                        result[i]['is_seeker_div_ls'] = 1
                     result[i]['seeker_div_nr'] = len(sk['divs'])
                     if last_div_index >= 0:
                         result[i]['dist_prev_seeker_div'] = i - last_div_index
                     last_div_index = i
                     seeker_div_candle_indices.add(i)
+                    priority = (len(sk['divs']), i - sk['index'])
+                    if priority > zone_priority:
+                        zone_priority = priority
+                        zone_candidate = sk.get('zone_metrics')
 
             # 3. Detect new seekers at swing points
             if i in sh_set and _is_seeker_hs(c, self.seeker_min_wick):
                 result[i]['is_seeker_hs'] = 1
+                zone_metrics = _seeker_zone_metrics(c, 'HS')
+                result[i].update(zone_metrics)
                 active_seekers.append({
                     'type': 'HS', 'candle': c, 'index': i,
                     'divs': [], 'div_indices': [],
+                    'zone_metrics': zone_metrics,
                 })
                 seeker_origin_indices.add(i)
             if i in sl_set and _is_seeker_ls(c, self.seeker_min_wick):
                 result[i]['is_seeker_ls'] = 1
+                zone_metrics = _seeker_zone_metrics(c, 'LS')
+                result[i].update(zone_metrics)
                 active_seekers.append({
                     'type': 'LS', 'candle': c, 'index': i,
                     'divs': [], 'div_indices': [],
+                    'zone_metrics': zone_metrics,
                 })
                 seeker_origin_indices.add(i)
+
+            if zone_candidate and not (result[i]['is_seeker_hs'] or result[i]['is_seeker_ls']):
+                result[i].update(zone_candidate)
 
             # 4. Mark whether this candle was a seeker or seeker div
             result[i]['candle_was_seeker'] = 1 if i in seeker_origin_indices else 0

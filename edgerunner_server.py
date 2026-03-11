@@ -30,7 +30,7 @@ from http.server import ThreadingHTTPServer
 # Edgerunner modules
 from candle_analyzer import CandleAnalyzer
 from db import (init_db, insert_candles, count_candles, get_candle_by_ts,
-                get_ts_range, get_all_tf_stats, DEFAULT_DB_PATH, TIMEFRAMES,
+                get_ts_range, get_all_tf_stats, DEFAULT_DB_PATH, TIMEFRAMES, FEATURE_COLUMNS,
                 create_user, authenticate_user, create_session,
                 validate_session, delete_session,
                 get_settings, save_settings, get_candles_paginated,
@@ -40,6 +40,7 @@ from db import (init_db, insert_candles, count_candles, get_candle_by_ts,
                 dismiss_signal,
                 save_reference, list_references, get_reference)
 import hyperliquid_api
+from seeker_cycles import get_cycle_context, get_seeker_cycles
 
 PORT = int(sys.argv[sys.argv.index('--port') + 1]) if '--port' in sys.argv else 9998
 DASHBOARD_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -85,7 +86,7 @@ state = {
     'candles': [],
     'features': {
         'values': {},
-        'computed': 89,
+        'computed': len(FEATURE_COLUMNS),
         'processing_ms': 0,
         'counter': 0,
     },
@@ -136,53 +137,21 @@ state = {
 _sparkline = deque(maxlen=60)
 
 # ============================================================================
-# FEATURE NAMES (all 89)
+# FEATURE NAMES
 # ============================================================================
 
-FEATURE_NAMES = [
-    'timestamp', 'open', 'high', 'low', 'close', 'volume', 'delta',
-    'body_size', 'upper_wick', 'lower_wick', 'total_range', 'body_ratio',
-    'wick_ratio', 'body_position', 'is_bullish',
-    'delta_pct', 'vol_vs_ma', 'delta_vs_ma',
-    'is_swing_high', 'is_swing_low', 'bos_bull', 'bos_bear', 'choch',
-    'dist_swing_high', 'dist_swing_low',
-    'bos_body', 'bos_wick', 'break_depth', 'swing_age', 'swing_age_norm',
-    'breaks_highs', 'breaks_lows', 'max_age_broken', 'min_age_broken',
-    'sw_body_ratio', 'sw_wick_ratio', 'sw_delta_pct', 'sw_vol_rel',
-    'sw_bullish', 'sw_body_pos', 'sw_ohlc', 'vol_ratio_bsw',
-    'delta_ratio_bsw', 'body_ratio_bsw', 'same_dir', 'broken_was_seeker',
-    'broken_was_seeker_div',
-    'swing_had_break', 'chain_depth', 'prev_swing_features',
-    'cluster_range', 'cluster_range_atr', 'cluster_spread',
-    'macd_line', 'macd_peak', 'macd_trough', 'bull_div', 'bear_div',
-    'div_near_daily', 'div_strength', 'div_width',
-    'is_seeker_hs', 'is_seeker_ls', 'is_seeker_div', 'seeker_div_nr',
-    'dist_prev_seeker_div', 'dist_prev_seeker_div_norm', 'is_seeker_kill',
-    'killed_seeker_divs', 'killed_seeker_ts',
-    'killed_seekers_count', 'killed_seekers_ages',
-    'killed_seekers_oldest_ts', 'killed_seekers_newest_ts',
-    'killed_seekers_span_bars',
-    'killed_seekers_age_min', 'killed_seekers_age_max', 'killed_seekers_age_avg',
-    'candle_was_seeker', 'candle_was_seeker_div',
-    'ema21_dist', 'ema50_dist', 'ema200_dist', 'atr14', 'rsi14', 'vwap_dist',
-    'htf_trend', 'htf_swing_high', 'htf_swing_low', 'htf_bos',
-    'whale_sentiment', 'whale_confidence', 'bull_pressure', 'bear_pressure',
-    'whale_cluster', 'whale_cluster_strength', 'whale_cluster_dir',
-    'elite_whale_active',
-]
-
-assert len(FEATURE_NAMES) == 98, f'Expected 98 features, got {len(FEATURE_NAMES)}'
+FEATURE_NAMES = list(FEATURE_COLUMNS)
 
 # Swing lookback per TF
 TF_LOOKBACK = {
-    '1m': 2, '5m': 2, '15m': 2, '30m': 2,
-    '1h': 2, '4h': 2, '1d': 2, '1w': 2, '1M': 2,
+    '1m': 2, '3m': 2, '5m': 2, '10m': 2, '15m': 2, '30m': 2,
+    '1h': 2, '2h': 2, '4h': 2, '1d': 2, '1w': 2, '1M': 2,
 }
 
 # How many candles to fetch per TF from Hyperliquid
 TF_FETCH_LIMIT = {
-    '1m': 200, '5m': 200, '15m': 200, '30m': 100,
-    '1h': 100, '4h': 100, '1d': 50, '1w': 50, '1M': 30,
+    '1m': 200, '3m': 200, '5m': 200, '10m': 160, '15m': 200, '30m': 100,
+    '1h': 100, '2h': 100, '4h': 100, '1d': 50, '1w': 50, '1M': 30,
 }
 
 # ============================================================================
@@ -802,7 +771,7 @@ def _hyperliquid_poller():
                             state['structure'] = state['structure_by_tf'][tf]
 
                         state['stats']['candles_processed'] += len(candles)
-                        state['stats']['features_computed'] += 89
+                        state['stats']['features_computed'] += len(FEATURE_COLUMNS)
                         state['stats']['patterns_detected'] += patterns
 
                         # Sparkline from 1m
@@ -1025,7 +994,7 @@ def _signal_updater():
                     base = 0.35 + vol * 5
                     noise = math.sin(t * 0.3) * 0.15 + math.sin(t * 0.7) * 0.08
                     conf = max(0.05, min(0.95, base + noise))
-                    aligned = int(conf * 89)
+                    aligned = int(conf * len(FEATURE_COLUMNS))
 
                     with _state_lock:
                         state['signal'] = {
@@ -1059,7 +1028,7 @@ def _pattern_detector():
         try:
             from live_detector import check_patterns_for_candle, save_detected_signals
 
-            for tf in ['1m', '5m', '15m']:  # Only check fast TFs
+            for tf in ['1m', '3m', '5m', '10m', '15m']:  # Only check fast TFs
                 with _state_lock:
                     candles = state['candles_by_tf'].get(tf, [])
                 if not candles:
@@ -1132,10 +1101,14 @@ def _build_candle_analysis(candle_data, lookback_count):
         events.append('SWING LOW — Diese Kerze ist ein lokales Tief')
     if m.get('bull_div'):
         ds = m.get('div_strength', 0) or 0
-        events.append(f'BULLISCHE DIVERGENZ (Staerke: {ds:.4f}) — Preis faellt aber MACD steigt')
+        streak = int(m.get('bull_div_streak', 0) or 0)
+        suffix = f' x{streak}' if streak > 1 else ''
+        events.append(f'BULLISCHE DIVERGENZ{suffix} (Staerke: {ds:.4f}) — Preis faellt aber MACD steigt')
     if m.get('bear_div'):
         ds = m.get('div_strength', 0) or 0
-        events.append(f'BAERISCHE DIVERGENZ (Staerke: {ds:.4f}) — Preis steigt aber MACD faellt')
+        streak = int(m.get('bear_div_streak', 0) or 0)
+        suffix = f' x{streak}' if streak > 1 else ''
+        events.append(f'BAERISCHE DIVERGENZ{suffix} (Staerke: {ds:.4f}) — Preis steigt aber MACD faellt')
     if m.get('is_seeker_kill'):
         cnt = int(m.get('killed_seekers_count', 0) or 0)
         age_min = int(m.get('killed_seekers_age_min', 0) or 0)
@@ -1279,8 +1252,12 @@ def _build_candle_analysis(candle_data, lookback_count):
                 if c.get('bos_bull'): c_events.append('BOS+')
                 if c.get('bos_bear'): c_events.append('BOS-')
                 if c.get('choch'): c_events.append('CHoCH')
-                if c.get('bull_div'): c_events.append('DIV+')
-                if c.get('bear_div'): c_events.append('DIV-')
+                if c.get('bull_div'):
+                    streak = int(c.get('bull_div_streak', 0) or 0)
+                    c_events.append(f'DIV+ x{streak}' if streak > 1 else 'DIV+')
+                if c.get('bear_div'):
+                    streak = int(c.get('bear_div_streak', 0) or 0)
+                    c_events.append(f'DIV- x{streak}' if streak > 1 else 'DIV-')
                 evt_str = f' [{",".join(c_events)}]' if c_events else ''
                 lines.append(
                     f'  [{offset}] {cts} {c_dir} Close:{c_close:.2f} RSI:{c_rsi:.1f} Vol:{c_vol:.2f}{evt_str}'
@@ -1294,8 +1271,12 @@ def _build_candle_analysis(candle_data, lookback_count):
     else: bear_signals.append('Rote Kerze')
     if m.get('bos_bull'): bull_signals.append('BOS Bull')
     if m.get('bos_bear'): bear_signals.append('BOS Bear')
-    if m.get('bull_div'): bull_signals.append('Bull Divergenz')
-    if m.get('bear_div'): bear_signals.append('Bear Divergenz')
+    if m.get('bull_div'):
+        streak = int(m.get('bull_div_streak', 0) or 0)
+        bull_signals.append(f'Bull Divergenz x{streak}' if streak > 1 else 'Bull Divergenz')
+    if m.get('bear_div'):
+        streak = int(m.get('bear_div_streak', 0) or 0)
+        bear_signals.append(f'Bear Divergenz x{streak}' if streak > 1 else 'Bear Divergenz')
     if rsi < 30: bull_signals.append('RSI ueberverkauft')
     if rsi > 70: bear_signals.append('RSI ueberkauft')
     if vol > 1.5: bull_signals.append('Hohes Volume')
@@ -2327,6 +2308,67 @@ class EdgerunnerHandler(http.server.BaseHTTPRequestHandler):
             self._json(result)
             return
 
+        if path == '/api/seeker-cycles':
+            params = urllib.parse.parse_qs(parsed.query)
+            tf = params.get('tf', ['1m'])[0]
+            if tf not in TIMEFRAMES:
+                tf = '1m'
+            status = params.get('status', [None])[0]
+            try:
+                limit = min(int(params.get('limit', [250])[0]), 1000)
+            except ValueError:
+                limit = 250
+            cycles = get_seeker_cycles(tf=tf, status=status, limit=limit, path=_db_path)
+            self._json({
+                'timeframe': tf,
+                'status': status,
+                'count': len(cycles),
+                'cycles': cycles,
+            })
+            return
+
+        if path == '/api/seeker-cycles/current':
+            params = urllib.parse.parse_qs(parsed.query)
+            tf = params.get('tf', ['1m'])[0]
+            if tf not in TIMEFRAMES:
+                tf = '1m'
+            ts_param = params.get('ts', [None])[0]
+            price_param = params.get('price', [None])[0]
+            try:
+                ts = int(ts_param) if ts_param not in (None, '', 'null') else None
+                price = float(price_param) if price_param not in (None, '', 'null') else None
+            except ValueError:
+                self._json({'error': 'Invalid ts/price'}, 400)
+                return
+            context = get_cycle_context(tf=tf, ts=ts, price=price, path=_db_path)
+            self._json(context)
+            return
+
+        if path == '/api/seeker-cycles/nearest':
+            params = urllib.parse.parse_qs(parsed.query)
+            tf = params.get('tf', ['1m'])[0]
+            if tf not in TIMEFRAMES:
+                tf = '1m'
+            ts_param = params.get('ts', [None])[0]
+            price_param = params.get('price', [None])[0]
+            try:
+                ts = int(ts_param) if ts_param not in (None, '', 'null') else None
+                price = float(price_param) if price_param not in (None, '', 'null') else None
+            except ValueError:
+                self._json({'error': 'Invalid ts/price'}, 400)
+                return
+            context = get_cycle_context(tf=tf, ts=ts, price=price, path=_db_path)
+            self._json({
+                'timeframe': tf,
+                'activeAtTs': context.get('activeAtTs'),
+                'price': context.get('price'),
+                'nearestOpenHsAbove': context.get('nearestOpenHsAbove'),
+                'nearestOpenLsBelow': context.get('nearestOpenLsBelow'),
+                'nearestKilledHsAbove': context.get('nearestKilledHsAbove'),
+                'nearestKilledLsBelow': context.get('nearestKilledLsBelow'),
+            })
+            return
+
         if path.startswith('/api/scenarios/') and path.endswith('/stats'):
             parts = path.split('/')
             scenario_name = urllib.parse.unquote(parts[3])
@@ -2394,7 +2436,7 @@ class EdgerunnerHandler(http.server.BaseHTTPRequestHandler):
                 features_val = s['features_by_tf'].get(tf, {})
                 self._json({
                     'values': features_val,
-                    'computed': 89,
+                    'computed': len(FEATURE_NAMES),
                     'processing_ms': s['features']['processing_ms'],
                     'counter': s['features']['counter'],
                     'timeframe': tf,

@@ -35,8 +35,8 @@ HL_BTC_START_MS = 1680307200000
 
 # Swing lookback per TF (smaller TFs need more lookback)
 TF_LOOKBACK = {
-    '1m': 5, '5m': 5, '15m': 3, '30m': 3,
-    '1h': 3, '4h': 3, '1d': 2, '1w': 2, '1M': 2,
+    '1m': 5, '3m': 5, '5m': 5, '10m': 4, '15m': 3, '30m': 3,
+    '1h': 3, '2h': 3, '4h': 3, '1d': 2, '1w': 2, '1M': 2,
 }
 
 

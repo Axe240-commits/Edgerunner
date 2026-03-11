@@ -66,7 +66,7 @@ export default function SignalPanel({ signal }) {
         <div className="gauge-value" ref={valueRef}>0%</div>
       </div>
       <div className="gauge-status">{signal?.status || 'ANALYZING'}</div>
-      <div className="gauge-label">{signal?.features_aligned || 0}/89 features aligned</div>
+      <div className="gauge-label">{signal?.features_aligned || 0}/115 features aligned</div>
     </div>
   )
 }

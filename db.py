@@ -2,16 +2,18 @@
 """
 Edgerunner Database — SQLite Schema + CRUD for candle features.
 
-Multi-TF: Separate tables per timeframe (candles_1m, candles_5m, ..., candles_1M).
+Multi-TF: Separate tables per timeframe (candles_1m, candles_3m, ..., candles_1M).
 One row per candle, all 89 features as columns.
 """
 import sqlite3
 import os
 from typing import Optional
 
+from seeker_cycles import ensure_tables as ensure_seeker_cycle_tables, sync_seeker_cycles_incremental
+
 DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'edgerunner.db')
 
-TIMEFRAMES = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w', '1M']
+TIMEFRAMES = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d', '1w', '1M']
 
 # Column definitions (shared across all TF tables)
 CANDLE_COLUMNS_SQL = """
@@ -45,12 +47,14 @@ CANDLE_COLUMNS_SQL = """
     swing_had_break INTEGER, chain_depth INTEGER, prev_swing_features TEXT,
     -- Cluster (3)
     cluster_range REAL, cluster_range_atr REAL, cluster_spread INTEGER,
-    -- MACD + Divergenzen (8)
+    -- MACD + Divergenzen (10)
     macd_line REAL, macd_peak INTEGER, macd_trough INTEGER,
     bull_div INTEGER, bear_div INTEGER, div_near_daily INTEGER,
     div_strength REAL, div_width INTEGER,
-    -- Seeker (10)
+    bull_div_streak INTEGER, bear_div_streak INTEGER,
+    -- Seeker (12)
     is_seeker_hs INTEGER, is_seeker_ls INTEGER, is_seeker_div INTEGER,
+    is_seeker_div_hs INTEGER, is_seeker_div_ls INTEGER,
     seeker_div_nr INTEGER, dist_prev_seeker_div INTEGER,
     dist_prev_seeker_div_norm REAL, is_seeker_kill INTEGER,
     killed_seeker_divs INTEGER, killed_seeker_ts INTEGER,
@@ -60,6 +64,9 @@ CANDLE_COLUMNS_SQL = """
     killed_seekers_age_min INTEGER, killed_seekers_age_max INTEGER,
     killed_seekers_age_avg REAL,
     candle_was_seeker INTEGER, candle_was_seeker_div INTEGER,
+    seeker_zone_top REAL, seeker_zone_bottom REAL,
+    seeker_zone_size REAL, seeker_zone_pct_of_range REAL,
+    seeker_zone_vs_body REAL, seeker_wick_dominance REAL,
     -- Kontext/Trend (6)
     ema21_dist REAL, ema50_dist REAL, ema200_dist REAL,
     atr14 REAL, rsi14 REAL, vwap_dist REAL,
@@ -199,8 +206,9 @@ FEATURE_COLUMNS = [
     'cluster_range', 'cluster_range_atr', 'cluster_spread',
     'macd_line', 'macd_peak', 'macd_trough',
     'bull_div', 'bear_div', 'div_near_daily',
-    'div_strength', 'div_width',
+    'div_strength', 'div_width', 'bull_div_streak', 'bear_div_streak',
     'is_seeker_hs', 'is_seeker_ls', 'is_seeker_div',
+    'is_seeker_div_hs', 'is_seeker_div_ls',
     'seeker_div_nr', 'dist_prev_seeker_div',
     'dist_prev_seeker_div_norm', 'is_seeker_kill',
     'killed_seeker_divs', 'killed_seeker_ts',
@@ -209,6 +217,9 @@ FEATURE_COLUMNS = [
     'killed_seekers_span_bars',
     'killed_seekers_age_min', 'killed_seekers_age_max', 'killed_seekers_age_avg',
     'candle_was_seeker', 'candle_was_seeker_div',
+    'seeker_zone_top', 'seeker_zone_bottom',
+    'seeker_zone_size', 'seeker_zone_pct_of_range',
+    'seeker_zone_vs_body', 'seeker_wick_dominance',
     'ema21_dist', 'ema50_dist', 'ema200_dist',
     'atr14', 'rsi14', 'vwap_dist',
     'htf_trend', 'htf_swing_high', 'htf_swing_low', 'htf_bos',
@@ -222,7 +233,7 @@ NUMERIC_FEATURES = [c for c in FEATURE_COLUMNS
                     if c not in ('timestamp', 'sw_ohlc', 'prev_swing_features',
                                  'broken_swing_ts', 'killed_seeker_ts', 'killed_seekers_ages')]
 
-assert len(FEATURE_COLUMNS) == 105, f'Expected 105 columns, got {len(FEATURE_COLUMNS)}'
+assert len(FEATURE_COLUMNS) == 115, f'Expected 115 columns, got {len(FEATURE_COLUMNS)}'
 
 
 def _connect(path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
@@ -293,6 +304,8 @@ def init_db(path: str = DEFAULT_DB_PATH) -> str:
         migrations = [
             ('broken_swing_ts', 'INTEGER'),
             ('killed_seeker_ts', 'INTEGER'),
+            ('is_seeker_div_hs', 'INTEGER'),
+            ('is_seeker_div_ls', 'INTEGER'),
             ('spot_volume', 'REAL'),
             ('spot_delta', 'REAL'),
             ('futures_volume', 'REAL'),
@@ -307,6 +320,14 @@ def init_db(path: str = DEFAULT_DB_PATH) -> str:
             ('killed_seekers_age_min', 'INTEGER'),
             ('killed_seekers_age_max', 'INTEGER'),
             ('killed_seekers_age_avg', 'REAL'),
+            ('bull_div_streak', 'INTEGER'),
+            ('bear_div_streak', 'INTEGER'),
+            ('seeker_zone_top', 'REAL'),
+            ('seeker_zone_bottom', 'REAL'),
+            ('seeker_zone_size', 'REAL'),
+            ('seeker_zone_pct_of_range', 'REAL'),
+            ('seeker_zone_vs_body', 'REAL'),
+            ('seeker_wick_dominance', 'REAL'),
         ]
         for col, col_type in migrations:
             try:
@@ -343,6 +364,9 @@ def init_db(path: str = DEFAULT_DB_PATH) -> str:
     # Create pattern tables (saved_patterns, pattern_signals)
     conn.executescript(PATTERN_TABLES_SQL)
 
+    # Create seeker cycle tables
+    ensure_seeker_cycle_tables(conn)
+
     conn.close()
     return path
 
@@ -372,6 +396,10 @@ def insert_candles(candles: list, tf: str = '1m', path: str = DEFAULT_DB_PATH):
         conn.commit()
     finally:
         conn.close()
+    try:
+        sync_seeker_cycles_incremental(candles, tf=tf, path=path)
+    except Exception as cycle_err:
+        print(f'  [DB/{tf}] Seeker cycle sync warning: {cycle_err}')
     return inserted
 
 

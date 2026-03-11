@@ -7,7 +7,7 @@ import CyberButton from '../ui/CyberButton'
 import TabBar from './TabBar'
 import './DashboardHeader.css'
 
-const TF_LIST = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w', '1M']
+const TF_LIST = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d', '1w', '1M']
 
 export default function DashboardHeader({ ticker, sparkline, stats, tf, timeframes, onTfChange, activeTab, onTabChange, signalCount }) {
   const { logout } = useAuth()

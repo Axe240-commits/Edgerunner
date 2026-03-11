@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { api, apiPost } from '../../api/client'
 import './SettingsTab.css'
 
-const TF_LIST = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w', '1M']
+const TF_LIST = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d', '1w', '1M']
 
 const DEFAULTS = {
   macd_fast: 5,
@@ -12,7 +12,7 @@ const DEFAULTS = {
   atr_period: 14,
   ema_periods: [21, 50, 200],
   seeker_min_wick: 0.20,
-  swing_lookback: { '1m': 2, '5m': 2, '15m': 2, '30m': 2, '1h': 2, '4h': 2, '1d': 2, '1w': 2, '1M': 2 },
+  swing_lookback: { '1m': 2, '3m': 2, '5m': 2, '10m': 2, '15m': 2, '30m': 2, '1h': 2, '2h': 2, '4h': 2, '1d': 2, '1w': 2, '1M': 2 },
 }
 
 export default function SettingsTab() {
