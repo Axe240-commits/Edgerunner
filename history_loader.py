@@ -203,14 +203,49 @@ def load_history(coin='BTC', start_date=None, end_date=None,
         print()
 
 
-def enrich_whale_features(tf='1m', db_path=DEFAULT_DB_PATH,
-                          shadow_db='/home/albert/shadow-tracker/shadow_tracker.db'):
+def _resolve_shadow_db_path(explicit_path=None):
+    """Resolve a usable Shadow Tracker DB path."""
+    candidates = [
+        explicit_path,
+        os.environ.get('SHADOW_DB_PATH'),
+        '/home/axe240/Projects/recovery/tokyo_full_repos_2026-03-03/shadow_tracker/shadow_tracker.db',
+        '/home/axe240/Projects/recovery/tokyo_repos_2026-03-03/shadow_tracker/shadow_tracker.db',
+        '/home/axe240/shadow-tracker/shadow_tracker.db',
+        '/home/albert/shadow-tracker/shadow_tracker.db',
+    ]
+    for path in candidates:
+        if path and os.path.isfile(path):
+            return path
+    return None
+
+
+def _tf_to_ms(tf: str) -> int:
+    mapping = {
+        '1m': 60_000,
+        '3m': 180_000,
+        '5m': 300_000,
+        '10m': 600_000,
+        '15m': 900_000,
+        '30m': 1_800_000,
+        '1h': 3_600_000,
+        '2h': 7_200_000,
+        '4h': 14_400_000,
+        '1d': 86_400_000,
+        '1w': 604_800_000,
+        '1M': 2_592_000_000,
+    }
+    return mapping.get(tf, 60_000)
+
+
+def enrich_whale_features(tf='1m', db_path=DEFAULT_DB_PATH, shadow_db=None):
     """Enrich whale features from Shadow Tracker DB for overlapping timestamps."""
     import sqlite3
+    from collections import defaultdict
     from db import _table_name
 
-    if not os.path.isfile(shadow_db):
-        print(f'Shadow Tracker DB not found: {shadow_db}')
+    shadow_db = _resolve_shadow_db_path(shadow_db)
+    if not shadow_db:
+        print('Shadow Tracker DB not found in known locations')
         return
 
     table = _table_name(tf)
@@ -244,11 +279,12 @@ def enrich_whale_features(tf='1m', db_path=DEFAULT_DB_PATH,
 
     print(f'  Found {len(rows)} whale signals')
 
-    from collections import defaultdict
-    minute_signals = defaultdict(list)
+    tf_ms = _tf_to_ms(tf)
+    bucket_signals = defaultdict(list)
     for r in rows:
-        minute_ts = int(r['timestamp']) // 60 * 60 * 1000
-        minute_signals[minute_ts].append(dict(r))
+        event_ms = int(float(r['timestamp']) * 1000)
+        bucket_ts = (event_ms // tf_ms) * tf_ms
+        bucket_signals[bucket_ts].append(dict(r))
 
     conn = sqlite3.connect(db_path)
     updated = 0
@@ -256,7 +292,7 @@ def enrich_whale_features(tf='1m', db_path=DEFAULT_DB_PATH,
     tier_weights = {'ELITE': 5.0, 'PROVEN': 3.0, 'TRUSTED': 2.0,
                     'NEUTRAL': 1.0, 'UNPROVEN': 0.5, 'AVOID': 0.1}
 
-    for minute_ts, signals in minute_signals.items():
+    for candle_ts, signals in bucket_signals.items():
         bull_p = 0.0
         bear_p = 0.0
         elite_active = 0
@@ -293,7 +329,7 @@ def enrich_whale_features(tf='1m', db_path=DEFAULT_DB_PATH,
                     whale_cluster_dir=?, elite_whale_active=?
                 WHERE timestamp = ?
             ''', (sentiment, confidence, bull_norm, bear_norm,
-                  cluster, cluster_str, cluster_dir, elite_active, minute_ts))
+                  cluster, cluster_str, cluster_dir, elite_active, candle_ts))
             updated += 1
 
     conn.commit()

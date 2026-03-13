@@ -422,6 +422,7 @@ class CandleAnalyzer:
 
     Args:
         swing_lookback: Bars left/right for swing detection (default 2)
+        seeker_swing_lookback: Bars left/right for seeker swing detection (default 3)
         macd_fast: MACD fast EMA period (default 5)
         macd_slow: MACD slow EMA period (default 13)
         macd_signal: MACD signal period (default 1)
@@ -431,7 +432,7 @@ class CandleAnalyzer:
         seeker_min_wick: Min wick % of range for seeker detection (default 0.20)
     """
 
-    def __init__(self, swing_lookback=2, seeker_swing_lookback=2,
+    def __init__(self, swing_lookback=2, seeker_swing_lookback=3,
                  macd_fast=5, macd_slow=13, macd_signal=1,
                  rsi_period=14, atr_period=14, ema_periods=(21, 50, 200),
                  seeker_min_wick=0.20, vol_sma_period=10):
@@ -715,14 +716,22 @@ class CandleAnalyzer:
         sh_by_index = {sh['index']: sh for sh in swing_highs}
         sl_by_index = {sl['index']: sl for sl in swing_lows}
 
-        # Track which swing candles were seekers (for broken_was_seeker)
+        # Track which swing candles were seekers (for broken_was_seeker).
+        # This must follow the dedicated seeker swing logic, not the normal
+        # BOS swing lookback, otherwise seeker_swing_lookback changes only
+        # affect the seeker block and not paired breaker context.
+        if self.seeker_swing_lookback != self.swing_lookback:
+            seeker_swing_highs, seeker_swing_lows = detect_swings(candles, self.seeker_swing_lookback)
+        else:
+            seeker_swing_highs, seeker_swing_lows = swing_highs, swing_lows
+
         seeker_hs_indices = set()
         seeker_ls_indices = set()
         seeker_div_indices = set()  # candles that generated seeker divs
-        for sh in swing_highs:
+        for sh in seeker_swing_highs:
             if _is_seeker_hs(sh['candle'], self.seeker_min_wick):
                 seeker_hs_indices.add(sh['index'])
-        for sl in swing_lows:
+        for sl in seeker_swing_lows:
             if _is_seeker_ls(sl['candle'], self.seeker_min_wick):
                 seeker_ls_indices.add(sl['index'])
 

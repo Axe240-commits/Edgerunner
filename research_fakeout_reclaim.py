@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import importlib
 import json
 import math
 import sqlite3
@@ -28,6 +29,7 @@ from pathlib import Path
 from typing import Iterable
 
 from db import DEFAULT_DB_PATH, _connect, _table_name
+from research_warehouse import connect_warehouse
 
 
 RESEARCH_TFS = ["1m", "3m", "5m", "10m", "15m", "30m", "1h", "2h", "4h", "1d", "1w"]
@@ -74,6 +76,25 @@ TARGET_MODELS = {
     "2.0R": 2.0,
 }
 
+TRANSITION_CONTEXT_KEYS = (
+    "direction_margin",
+    "regime_margin",
+    "micro_margin",
+    "lifecycle_margin",
+    "lifecycle_pressure",
+    "lifecycle_maturity",
+    "volume_margin",
+    "spot_margin",
+    "futures_margin",
+    "lead_margin",
+    "whale_margin",
+    "breakout_force",
+    "rejection_force",
+    "compression_force",
+    "reclaim_quality_long",
+    "reclaim_quality_short",
+)
+
 FEATURE_COLUMNS = (
     "timestamp, open, high, low, close, total_range, body_ratio, wick_ratio, "
     "body_position, delta_pct, vol_vs_ma, cluster_range_atr, cluster_spread, "
@@ -82,10 +103,15 @@ FEATURE_COLUMNS = (
     "is_seeker_kill, killed_seekers_count, killed_seeker_divs, killed_seekers_age_min, "
     "killed_seekers_age_max, break_depth, swing_age, sw_bullish, same_dir, "
     "bos_body, bos_wick, delta_vs_ma, "
-    "spot_volume, futures_volume, futures_minus_spot_volume, "
+    "spot_volume, spot_delta, futures_volume, futures_delta, futures_minus_spot_volume, futures_minus_spot_delta, "
     "dist_swing_high, dist_swing_low, seeker_zone_size, seeker_zone_vs_body, "
-    "seeker_wick_dominance, htf_trend, htf_bos"
+    "seeker_wick_dominance, htf_trend, htf_bos, "
+    "whale_sentiment, whale_confidence, bull_pressure, bear_pressure, "
+    "whale_cluster, whale_cluster_strength, whale_cluster_dir, elite_whale_active"
 )
+FEATURE_COLUMN_NAMES = [part.strip() for part in FEATURE_COLUMNS.split(",")]
+THRESHOLD_COLUMNS = "timestamp, cluster_range_atr, vol_vs_ma, cluster_spread"
+CYCLE_TS_COLUMNS = "timestamp, close"
 
 
 @dataclass
@@ -97,15 +123,37 @@ class TfThresholds:
 
 @dataclass
 class TfCursor:
-    rows: list[sqlite3.Row]
+    rows: list[dict]
     index: int = 0
 
-    def advance_to(self, ts: int) -> sqlite3.Row | None:
+    def advance_to(self, ts: int) -> dict | None:
         while self.index + 1 < len(self.rows) and int(self.rows[self.index + 1]["timestamp"]) <= ts:
             self.index += 1
         if self.rows and int(self.rows[self.index]["timestamp"]) <= ts:
             return self.rows[self.index]
         return None
+
+
+def using_duckdb(conn: object) -> bool:
+    module = conn.__class__.__module__
+    return module.startswith("duckdb") or module.startswith("_duckdb")
+
+
+def query_rows(conn: object, sql: str, params: tuple | list = ()) -> list[dict]:
+    if using_duckdb(conn):
+        return conn.execute(sql, params).to_arrow_table().to_pylist()
+    return [dict(row) for row in conn.execute(sql, params).fetchall()]
+
+
+def query_row(conn: object, sql: str, params: tuple | list = ()) -> dict | None:
+    rows = query_rows(conn, sql, params)
+    return rows[0] if rows else None
+
+
+def connect_research_backend(db_path: str, use_warehouse: bool = False):
+    if use_warehouse or db_path.endswith(".duckdb"):
+        return connect_warehouse(db_path)
+    return _connect(db_path)
 
 
 def percentile(values: list[float], p: float) -> float:
@@ -129,6 +177,26 @@ def clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
 
 
+def band_score(value: float, low: float, peak: float, high: float) -> float:
+    if value <= low or value >= high:
+        return 0.0
+    if value == peak:
+        return 1.0
+    if value < peak:
+        return (value - low) / max(1e-9, peak - low)
+    return (high - value) / max(1e-9, high - peak)
+
+
+def unique_quantile_thresholds(values: list[float]) -> list[float]:
+    if not values:
+        return []
+    thresholds = {
+        round(percentile(values, q), 4)
+        for q in (0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.5, 0.6, 0.7, 0.8, 0.85)
+    }
+    return sorted(thresholds)
+
+
 def fmt_ts(ts: int) -> str:
     return datetime.fromtimestamp(ts / 1000, tz=timezone.utc).astimezone().strftime("%d.%m.%y %H:%M")
 
@@ -143,16 +211,18 @@ def result_rank(result: str) -> int:
 
 
 def load_timeframe_rows(
-    conn: sqlite3.Connection,
+    conn: object,
     tf: str,
     since_ts: int | None = None,
     until_ts: int | None = None,
-) -> list[sqlite3.Row]:
+    columns: str = FEATURE_COLUMNS,
+) -> list[dict]:
     table = _table_name(tf)
     if since_ts is None and until_ts is None:
-        return conn.execute(
-            f"SELECT {FEATURE_COLUMNS} FROM {table} ORDER BY timestamp"
-        ).fetchall()
+        return query_rows(
+            conn,
+            f"SELECT {columns} FROM {table} ORDER BY timestamp"
+        )
     clauses = []
     params: list[int] = []
     if since_ts is not None:
@@ -162,13 +232,114 @@ def load_timeframe_rows(
         clauses.append("timestamp <= ?")
         params.append(until_ts)
     where = " AND ".join(clauses)
-    return conn.execute(
-        f"SELECT {FEATURE_COLUMNS} FROM {table} WHERE {where} ORDER BY timestamp",
+    return query_rows(
+        conn,
+        f"SELECT {columns} FROM {table} WHERE {where} ORDER BY timestamp",
         tuple(params),
-    ).fetchall()
+    )
 
 
-def build_thresholds(rows: Iterable[sqlite3.Row]) -> TfThresholds:
+def build_joined_warehouse_rows(
+    conn: object,
+    since_ts: int | None = None,
+    until_ts: int | None = None,
+) -> list[dict]:
+    m1_where = []
+    params: list[int] = []
+    if since_ts is not None:
+        m1_where.append("timestamp >= ?")
+        params.append(since_ts)
+    if until_ts is not None:
+        m1_where.append("timestamp <= ?")
+        params.append(until_ts)
+    base_where = f"WHERE {' AND '.join(m1_where)}" if m1_where else ""
+
+    select_parts = [f"m1.{col}" for col in FEATURE_COLUMN_NAMES]
+    join_parts = []
+    for tf in HIGHER_TFS:
+        alias = f"tf_{tf.replace('m', 'm').replace('h', 'h').replace('d', 'd').replace('w', 'w')}"
+        table = _table_name(tf)
+        tf_select = ", ".join(
+            [f'{alias}.{col} AS "{tf}__{col}"' for col in FEATURE_COLUMN_NAMES]
+        )
+        select_parts.append(tf_select)
+        join_parts.append(
+            f"""
+            ASOF LEFT JOIN (
+                SELECT {FEATURE_COLUMNS}
+                FROM {table}
+                ORDER BY timestamp
+            ) AS {alias}
+            ON m1.timestamp >= {alias}.timestamp
+            """
+        )
+
+    sql = f"""
+        SELECT
+            {", ".join(select_parts)}
+        FROM (
+            SELECT {FEATURE_COLUMNS}
+            FROM candles_1m
+            {base_where}
+            ORDER BY timestamp
+        ) AS m1
+        {' '.join(join_parts)}
+        ORDER BY m1.timestamp
+    """
+    return query_rows(conn, sql, params)
+
+
+def split_joined_mtf_rows(rows: list[dict]) -> tuple[list[dict], dict[str, list[dict]]]:
+    rows_1m: list[dict] = []
+    rows_by_tf: dict[str, list[dict]] = {tf: [] for tf in HIGHER_TFS}
+    seen_ts: dict[str, set[int]] = {tf: set() for tf in HIGHER_TFS}
+
+    for row in rows:
+        base = {col: row[col] for col in FEATURE_COLUMN_NAMES}
+        rows_1m.append(base)
+        for tf in HIGHER_TFS:
+            prefix = f"{tf}__"
+            tf_row = {col: row.get(f"{prefix}{col}") for col in FEATURE_COLUMN_NAMES}
+            ts = tf_row.get("timestamp")
+            if ts is None:
+                continue
+            ts_int = int(ts)
+            if ts_int in seen_ts[tf]:
+                continue
+            seen_ts[tf].add(ts_int)
+            rows_by_tf[tf].append(tf_row)
+    return rows_1m, rows_by_tf
+
+
+def mtf_context_from_joined_row(row: dict) -> dict[str, dict] | None:
+    mtf_rows: dict[str, dict] = {}
+    for tf in HIGHER_TFS:
+        prefix = f"{tf}__"
+        ts = row.get(f"{prefix}timestamp")
+        if ts is None:
+            mtf_rows[tf] = None
+            continue
+        mtf_rows[tf] = {col: row.get(f"{prefix}{col}") for col in FEATURE_COLUMN_NAMES}
+    return mtf_rows
+
+
+def mtf_timestamps_from_joined_row(row: dict) -> dict[str, int | None]:
+    mtf_ts: dict[str, int | None] = {}
+    for tf in HIGHER_TFS:
+        prefix = f"{tf}__"
+        ts = row.get(f"{prefix}timestamp")
+        mtf_ts[tf] = int(ts) if ts is not None else None
+    return mtf_ts
+
+
+def mtf_timestamps_from_rows(mtf_rows: dict[str, dict | None]) -> dict[str, int | None]:
+    return {
+        tf: (int(tf_row["timestamp"]) if tf_row is not None else None)
+        for tf, tf_row in mtf_rows.items()
+    }
+
+
+def build_thresholds(rows: Iterable[dict]) -> TfThresholds:
     cluster = [to_num(row["cluster_range_atr"]) for row in rows if row["cluster_range_atr"] is not None]
     volume = [to_num(row["vol_vs_ma"]) for row in rows if row["vol_vs_ma"] is not None]
     spread = [to_num(row["cluster_spread"]) for row in rows if row["cluster_spread"] is not None]
@@ -179,7 +350,7 @@ def build_thresholds(rows: Iterable[sqlite3.Row]) -> TfThresholds:
     )
 
 
-def row_tight_range(row: sqlite3.Row, thresholds: TfThresholds) -> bool:
+def row_tight_range(row: dict, thresholds: TfThresholds) -> bool:
     return (
         to_num(row["cluster_range_atr"]) <= thresholds.tight_cluster
         and to_num(row["vol_vs_ma"], 1.0) <= thresholds.quiet_volume
@@ -187,7 +358,7 @@ def row_tight_range(row: sqlite3.Row, thresholds: TfThresholds) -> bool:
     )
 
 
-def score_snapshot(tf: str, row: sqlite3.Row, thresholds: TfThresholds) -> dict[str, float]:
+def score_snapshot(tf: str, row: dict, thresholds: TfThresholds) -> dict[str, float]:
     weight = TF_WEIGHT[tf]
     bull = 0.0
     bear = 0.0
@@ -254,8 +425,9 @@ def score_snapshot(tf: str, row: sqlite3.Row, thresholds: TfThresholds) -> dict[
     }
 
 
-def cycle_metrics(conn: sqlite3.Connection, tf: str, ts: int, price: float) -> dict[str, float]:
-    row = conn.execute(
+def cycle_metrics(conn: object, tf: str, ts: int, price: float) -> dict[str, float]:
+    row = query_row(
+        conn,
         """
         WITH active AS (
             SELECT
@@ -266,37 +438,120 @@ def cycle_metrics(conn: sqlite3.Connection, tf: str, ts: int, price: float) -> d
                 age_bars,
                 age_ms,
                 CASE
-                    WHEN last_kill_ts IS NOT NULL AND last_kill_ts <= :ts THEN 'killed'
+                    WHEN last_kill_ts IS NOT NULL AND last_kill_ts <= ? THEN 'killed'
                     ELSE 'open'
                 END AS eff_status
             FROM seeker_cycles
-            WHERE timeframe = :tf
-              AND origin_ts <= :ts
+            WHERE timeframe = ?
+              AND origin_ts <= ?
         )
         SELECT
-            COALESCE(SUM(CASE WHEN eff_status = 'open' AND cycle_type = 'HS' AND zone_bottom <= :price AND zone_top >= :price THEN 1 ELSE 0 END), 0) AS inside_open_hs,
-            COALESCE(SUM(CASE WHEN eff_status = 'open' AND cycle_type = 'LS' AND zone_bottom <= :price AND zone_top >= :price THEN 1 ELSE 0 END), 0) AS inside_open_ls,
-            COALESCE(SUM(CASE WHEN eff_status = 'killed' AND cycle_type = 'HS' AND zone_bottom <= :price AND zone_top >= :price THEN 1 ELSE 0 END), 0) AS inside_killed_hs,
-            COALESCE(SUM(CASE WHEN eff_status = 'killed' AND cycle_type = 'LS' AND zone_bottom <= :price AND zone_top >= :price THEN 1 ELSE 0 END), 0) AS inside_killed_ls,
-            MIN(CASE WHEN eff_status = 'open' AND cycle_type = 'HS' AND zone_bottom >= :price THEN zone_bottom - :price END) AS dist_open_hs_above,
-            MIN(CASE WHEN eff_status = 'open' AND cycle_type = 'LS' AND zone_top <= :price THEN :price - zone_top END) AS dist_open_ls_below,
-            MIN(CASE WHEN eff_status = 'killed' AND cycle_type = 'HS' AND zone_bottom >= :price THEN zone_bottom - :price END) AS dist_killed_hs_above,
-            MIN(CASE WHEN eff_status = 'killed' AND cycle_type = 'LS' AND zone_top <= :price THEN :price - zone_top END) AS dist_killed_ls_below,
-            COALESCE(MAX(CASE WHEN eff_status = 'open' AND cycle_type = 'HS' AND zone_bottom <= :price AND zone_top >= :price THEN div_count_total ELSE 0 END), 0) AS max_open_hs_divs,
-            COALESCE(MAX(CASE WHEN eff_status = 'open' AND cycle_type = 'LS' AND zone_bottom <= :price AND zone_top >= :price THEN div_count_total ELSE 0 END), 0) AS max_open_ls_divs,
-            COALESCE(MAX(CASE WHEN eff_status = 'killed' AND cycle_type = 'HS' AND zone_bottom <= :price AND zone_top >= :price THEN age_bars ELSE 0 END), 0) AS max_killed_hs_age_bars,
-            COALESCE(MAX(CASE WHEN eff_status = 'killed' AND cycle_type = 'LS' AND zone_bottom <= :price AND zone_top >= :price THEN age_bars ELSE 0 END), 0) AS max_killed_ls_age_bars
+            COALESCE(SUM(CASE WHEN eff_status = 'open' AND cycle_type = 'HS' AND zone_bottom <= ? AND zone_top >= ? THEN 1 ELSE 0 END), 0) AS inside_open_hs,
+            COALESCE(SUM(CASE WHEN eff_status = 'open' AND cycle_type = 'LS' AND zone_bottom <= ? AND zone_top >= ? THEN 1 ELSE 0 END), 0) AS inside_open_ls,
+            COALESCE(SUM(CASE WHEN eff_status = 'killed' AND cycle_type = 'HS' AND zone_bottom <= ? AND zone_top >= ? THEN 1 ELSE 0 END), 0) AS inside_killed_hs,
+            COALESCE(SUM(CASE WHEN eff_status = 'killed' AND cycle_type = 'LS' AND zone_bottom <= ? AND zone_top >= ? THEN 1 ELSE 0 END), 0) AS inside_killed_ls,
+            MIN(CASE WHEN eff_status = 'open' AND cycle_type = 'HS' AND zone_bottom >= ? THEN zone_bottom - ? END) AS dist_open_hs_above,
+            MIN(CASE WHEN eff_status = 'open' AND cycle_type = 'LS' AND zone_top <= ? THEN ? - zone_top END) AS dist_open_ls_below,
+            MIN(CASE WHEN eff_status = 'killed' AND cycle_type = 'HS' AND zone_bottom >= ? THEN zone_bottom - ? END) AS dist_killed_hs_above,
+            MIN(CASE WHEN eff_status = 'killed' AND cycle_type = 'LS' AND zone_top <= ? THEN ? - zone_top END) AS dist_killed_ls_below,
+            COALESCE(MAX(CASE WHEN eff_status = 'open' AND cycle_type = 'HS' AND zone_bottom >= ? THEN div_count_total ELSE 0 END), 0) AS nearest_open_hs_divs_above,
+            COALESCE(MAX(CASE WHEN eff_status = 'open' AND cycle_type = 'LS' AND zone_top <= ? THEN div_count_total ELSE 0 END), 0) AS nearest_open_ls_divs_below,
+            COALESCE(MAX(CASE WHEN eff_status = 'killed' AND cycle_type = 'HS' AND zone_bottom >= ? THEN age_bars ELSE 0 END), 0) AS nearest_killed_hs_age_bars_above,
+            COALESCE(MAX(CASE WHEN eff_status = 'killed' AND cycle_type = 'LS' AND zone_top <= ? THEN age_bars ELSE 0 END), 0) AS nearest_killed_ls_age_bars_below,
+            COALESCE(MAX(CASE WHEN eff_status = 'open' AND cycle_type = 'HS' AND zone_bottom <= ? AND zone_top >= ? THEN div_count_total ELSE 0 END), 0) AS max_open_hs_divs,
+            COALESCE(MAX(CASE WHEN eff_status = 'open' AND cycle_type = 'LS' AND zone_bottom <= ? AND zone_top >= ? THEN div_count_total ELSE 0 END), 0) AS max_open_ls_divs,
+            COALESCE(MAX(CASE WHEN eff_status = 'killed' AND cycle_type = 'HS' AND zone_bottom <= ? AND zone_top >= ? THEN age_bars ELSE 0 END), 0) AS max_killed_hs_age_bars,
+            COALESCE(MAX(CASE WHEN eff_status = 'killed' AND cycle_type = 'LS' AND zone_bottom <= ? AND zone_top >= ? THEN age_bars ELSE 0 END), 0) AS max_killed_ls_age_bars
         FROM active
         """,
-        {"tf": tf, "ts": ts, "price": price},
-    ).fetchone()
-    return {key: to_num(row[key]) for key in row.keys()}
+        [ts, tf, ts] + [price] * 28,
+    )
+    if not row:
+        return {}
+    return {key: to_num(value) for key, value in row.items()}
+
+
+def build_cycle_metric_cache_warehouse(
+    conn: object,
+    rows_by_tf: dict[str, list[dict]],
+) -> dict[str, dict[int, dict[str, float]]]:
+    pa = importlib.import_module("pyarrow")
+    cache: dict[str, dict[int, dict[str, float]]] = {}
+
+    for tf, rows in rows_by_tf.items():
+        probes = [
+            {"timestamp": int(row["timestamp"]), "price": to_num(row["close"])}
+            for row in rows
+            if row.get("timestamp") is not None
+        ]
+        if not probes:
+            cache[tf] = {}
+            continue
+
+        view_name = f"probe_{tf.replace('m', 'm').replace('h', 'h').replace('d', 'd').replace('w', 'w')}"
+        conn.register(view_name, pa.Table.from_pylist(probes))
+        tf_sql = tf.replace("'", "''")
+        result_rows = query_rows(
+            conn,
+            f"""
+            WITH joined AS (
+                SELECT
+                    p.timestamp,
+                    p.price,
+                    sc.cycle_type,
+                    sc.zone_top,
+                    sc.zone_bottom,
+                    sc.div_count_total,
+                    sc.age_bars,
+                    CASE
+                        WHEN sc.last_kill_ts IS NOT NULL AND sc.last_kill_ts <= p.timestamp THEN 'killed'
+                        ELSE 'open'
+                    END AS eff_status
+                FROM {view_name} AS p
+                LEFT JOIN seeker_cycles AS sc
+                  ON sc.timeframe = '{tf_sql}'
+                 AND sc.origin_ts <= p.timestamp
+            )
+            SELECT
+                timestamp,
+                COALESCE(SUM(CASE WHEN eff_status = 'open' AND cycle_type = 'HS' AND zone_bottom <= price AND zone_top >= price THEN 1 ELSE 0 END), 0) AS inside_open_hs,
+                COALESCE(SUM(CASE WHEN eff_status = 'open' AND cycle_type = 'LS' AND zone_bottom <= price AND zone_top >= price THEN 1 ELSE 0 END), 0) AS inside_open_ls,
+                COALESCE(SUM(CASE WHEN eff_status = 'killed' AND cycle_type = 'HS' AND zone_bottom <= price AND zone_top >= price THEN 1 ELSE 0 END), 0) AS inside_killed_hs,
+                COALESCE(SUM(CASE WHEN eff_status = 'killed' AND cycle_type = 'LS' AND zone_bottom <= price AND zone_top >= price THEN 1 ELSE 0 END), 0) AS inside_killed_ls,
+                MIN(CASE WHEN eff_status = 'open' AND cycle_type = 'HS' AND zone_bottom >= price THEN zone_bottom - price END) AS dist_open_hs_above,
+                MIN(CASE WHEN eff_status = 'open' AND cycle_type = 'LS' AND zone_top <= price THEN price - zone_top END) AS dist_open_ls_below,
+                MIN(CASE WHEN eff_status = 'killed' AND cycle_type = 'HS' AND zone_bottom >= price THEN zone_bottom - price END) AS dist_killed_hs_above,
+                MIN(CASE WHEN eff_status = 'killed' AND cycle_type = 'LS' AND zone_top <= price THEN price - zone_top END) AS dist_killed_ls_below,
+                COALESCE(MAX(CASE WHEN eff_status = 'open' AND cycle_type = 'HS' AND zone_bottom >= price THEN div_count_total ELSE 0 END), 0) AS nearest_open_hs_divs_above,
+                COALESCE(MAX(CASE WHEN eff_status = 'open' AND cycle_type = 'LS' AND zone_top <= price THEN div_count_total ELSE 0 END), 0) AS nearest_open_ls_divs_below,
+                COALESCE(MAX(CASE WHEN eff_status = 'killed' AND cycle_type = 'HS' AND zone_bottom >= price THEN age_bars ELSE 0 END), 0) AS nearest_killed_hs_age_bars_above,
+                COALESCE(MAX(CASE WHEN eff_status = 'killed' AND cycle_type = 'LS' AND zone_top <= price THEN age_bars ELSE 0 END), 0) AS nearest_killed_ls_age_bars_below,
+                COALESCE(MAX(CASE WHEN eff_status = 'open' AND cycle_type = 'HS' AND zone_bottom <= price AND zone_top >= price THEN div_count_total ELSE 0 END), 0) AS max_open_hs_divs,
+                COALESCE(MAX(CASE WHEN eff_status = 'open' AND cycle_type = 'LS' AND zone_bottom <= price AND zone_top >= price THEN div_count_total ELSE 0 END), 0) AS max_open_ls_divs,
+                COALESCE(MAX(CASE WHEN eff_status = 'killed' AND cycle_type = 'HS' AND zone_bottom <= price AND zone_top >= price THEN age_bars ELSE 0 END), 0) AS max_killed_hs_age_bars,
+                COALESCE(MAX(CASE WHEN eff_status = 'killed' AND cycle_type = 'LS' AND zone_bottom <= price AND zone_top >= price THEN age_bars ELSE 0 END), 0) AS max_killed_ls_age_bars
+            FROM joined
+            GROUP BY timestamp, price
+            ORDER BY timestamp
+            """,
+        )
+        conn.unregister(view_name)
+
+        tf_cache: dict[int, dict[str, float]] = {}
+        for item in result_rows:
+            ts = int(item["timestamp"])
+            tf_cache[ts] = {key: to_num(value) for key, value in item.items() if key != "timestamp"}
+        cache[tf] = tf_cache
+
+    return cache
 
 
 def build_cycle_metric_cache(
-    conn: sqlite3.Connection,
-    rows_by_tf: dict[str, list[sqlite3.Row]],
+    conn: object,
+    rows_by_tf: dict[str, list[dict]],
 ) -> dict[str, dict[int, dict[str, float]]]:
+    if using_duckdb(conn):
+        return build_cycle_metric_cache_warehouse(conn, rows_by_tf)
     cache: dict[str, dict[int, dict[str, float]]] = {}
     for tf, rows in rows_by_tf.items():
         tf_cache: dict[int, dict[str, float]] = {}
@@ -305,6 +560,52 @@ def build_cycle_metric_cache(
             if ts in tf_cache:
                 continue
             tf_cache[ts] = cycle_metrics(conn, tf, ts, to_num(row["close"]))
+        cache[tf] = tf_cache
+    return cache
+
+
+def build_snapshot_score_cache(
+    rows_by_tf: dict[str, list[dict]],
+    thresholds: dict[str, TfThresholds],
+) -> dict[str, dict[int, dict[str, float]]]:
+    cache: dict[str, dict[int, dict[str, float]]] = {}
+    for tf, rows in rows_by_tf.items():
+        tf_cache: dict[int, dict[str, float]] = {}
+        tf_thresholds = thresholds[tf]
+        for row in rows:
+            ts = int(row["timestamp"])
+            if ts in tf_cache:
+                continue
+            tf_cache[ts] = score_snapshot(tf, row, tf_thresholds)
+        cache[tf] = tf_cache
+    return cache
+
+
+def build_volume_breaker_score_cache(
+    rows_by_tf: dict[str, list[dict]],
+) -> dict[str, dict[int, dict[str, float]]]:
+    cache: dict[str, dict[int, dict[str, float]]] = {}
+    for tf, rows in rows_by_tf.items():
+        tf_cache: dict[int, dict[str, float]] = {}
+        for row in rows:
+            ts = int(row["timestamp"])
+            if ts in tf_cache:
+                continue
+            tf_cache[ts] = volume_breaker_score(tf, row)
+        cache[tf] = tf_cache
+    return cache
+
+
+def build_cycle_state_score_cache(
+    cycle_metric_cache: dict[str, dict[int, dict[str, float]]],
+) -> dict[str, dict[int, dict[str, float]]]:
+    cache: dict[str, dict[int, dict[str, float]]] = {}
+    for tf, tf_metrics in cycle_metric_cache.items():
+        tf_cache: dict[int, dict[str, float]] = {}
+        for ts, metrics in tf_metrics.items():
+            score = cycle_score(tf, metrics)
+            lifecycle = lifecycle_score(tf, metrics)
+            tf_cache[ts] = {**metrics, **score, **lifecycle}
         cache[tf] = tf_cache
     return cache
 
@@ -371,20 +672,121 @@ def cycle_score(tf: str, metrics: dict[str, float]) -> dict[str, float]:
     }
 
 
+def lifecycle_score(tf: str, metrics: dict[str, float]) -> dict[str, float]:
+    weight = TF_WEIGHT[tf]
+    bull = 0.0
+    bear = 0.0
+    pressure = 0.0
+    maturity = 0.0
+
+    open_ls_divs = metrics.get("max_open_ls_divs", 0.0)
+    open_hs_divs = metrics.get("max_open_hs_divs", 0.0)
+    killed_ls_age = metrics.get("max_killed_ls_age_bars", 0.0)
+    killed_hs_age = metrics.get("max_killed_hs_age_bars", 0.0)
+    nearest_open_ls_divs = metrics.get("nearest_open_ls_divs_below", 0.0)
+    nearest_open_hs_divs = metrics.get("nearest_open_hs_divs_above", 0.0)
+    nearest_killed_ls_age = metrics.get("nearest_killed_ls_age_bars_below", 0.0)
+    nearest_killed_hs_age = metrics.get("nearest_killed_hs_age_bars_above", 0.0)
+    dist_open_ls = metrics.get("dist_open_ls_below", 0.0)
+    dist_open_hs = metrics.get("dist_open_hs_above", 0.0)
+    dist_killed_ls = metrics.get("dist_killed_ls_below", 0.0)
+    dist_killed_hs = metrics.get("dist_killed_hs_above", 0.0)
+
+    if open_ls_divs > 0:
+        bull += weight * 0.06 * min(18.0, open_ls_divs)
+        pressure += weight * 0.05 * min(18.0, open_ls_divs)
+    if open_hs_divs > 0:
+        bear += weight * 0.06 * min(18.0, open_hs_divs)
+        pressure += weight * 0.05 * min(18.0, open_hs_divs)
+
+    if metrics["inside_killed_ls"] > 0 and killed_ls_age > 0:
+        freshness = 1.0 if killed_ls_age <= 6 else 0.55 if killed_ls_age <= 24 else 0.25
+        bull += weight * (0.45 + freshness * 0.55)
+        maturity += weight * freshness
+    if metrics["inside_killed_hs"] > 0 and killed_hs_age > 0:
+        freshness = 1.0 if killed_hs_age <= 6 else 0.55 if killed_hs_age <= 24 else 0.25
+        bear += weight * (0.45 + freshness * 0.55)
+        maturity += weight * freshness
+
+    if metrics["inside_open_ls"] > 0 and open_ls_divs >= 4:
+        bull += weight * 0.2
+        pressure += weight * 0.2
+    if metrics["inside_open_hs"] > 0 and open_hs_divs >= 4:
+        bear += weight * 0.2
+        pressure += weight * 0.2
+
+    if dist_open_ls > 0 and dist_open_ls <= 175 and nearest_open_ls_divs > 0:
+        bull += weight * 0.03 * min(15.0, nearest_open_ls_divs)
+        pressure += weight * 0.02 * min(15.0, nearest_open_ls_divs)
+    if dist_open_hs > 0 and dist_open_hs <= 175 and nearest_open_hs_divs > 0:
+        bear += weight * 0.03 * min(15.0, nearest_open_hs_divs)
+        pressure += weight * 0.02 * min(15.0, nearest_open_hs_divs)
+
+    if dist_killed_ls > 0 and dist_killed_ls <= 125 and nearest_killed_ls_age > 0:
+        freshness = 1.0 if nearest_killed_ls_age <= 6 else 0.55 if nearest_killed_ls_age <= 24 else 0.25
+        bull += weight * (0.12 + freshness * 0.18)
+        maturity += weight * freshness * 0.5
+    if dist_killed_hs > 0 and dist_killed_hs <= 125 and nearest_killed_hs_age > 0:
+        freshness = 1.0 if nearest_killed_hs_age <= 6 else 0.55 if nearest_killed_hs_age <= 24 else 0.25
+        bear += weight * (0.12 + freshness * 0.18)
+        maturity += weight * freshness * 0.5
+
+    return {
+        "bull": bull,
+        "bear": bear,
+        "pressure": pressure,
+        "maturity": maturity,
+    }
+
+
 def volume_breaker_score(tf: str, row: sqlite3.Row) -> dict[str, float]:
     weight = TF_WEIGHT[tf]
     bull = 0.0
     bear = 0.0
     breakout = 0.0
     rejection = 0.0
+    compression = 0.0
+    exhaustion = 0.0
+
+    spot_bull = 0.0
+    spot_bear = 0.0
+    futures_bull = 0.0
+    futures_bear = 0.0
+    lead_bull = 0.0
+    lead_bear = 0.0
+    whale_bull = 0.0
+    whale_bear = 0.0
 
     vol_vs_ma = to_num(row["vol_vs_ma"], 1.0)
     futures_lead = to_num(row["futures_minus_spot_volume"])
+    futures_delta_lead = to_num(row["futures_minus_spot_delta"])
     delta_pct = to_num(row["delta_pct"])
     bos_body = int(to_num(row["bos_body"]))
     bos_wick = int(to_num(row["bos_wick"]))
     dist_high = to_num(row["dist_swing_high"])
     dist_low = to_num(row["dist_swing_low"])
+    wick_ratio = to_num(row["wick_ratio"])
+    body_ratio = to_num(row["body_ratio"])
+    same_dir = int(to_num(row["same_dir"]))
+    spot_volume = to_num(row["spot_volume"])
+    spot_delta = to_num(row["spot_delta"])
+    futures_volume = to_num(row["futures_volume"])
+    futures_delta = to_num(row["futures_delta"])
+    whale_sentiment = to_num(row["whale_sentiment"])
+    whale_confidence = clamp(to_num(row["whale_confidence"]), 0.0, 1.0)
+    bull_pressure = to_num(row["bull_pressure"])
+    bear_pressure = to_num(row["bear_pressure"])
+    whale_cluster = int(to_num(row["whale_cluster"]))
+    whale_cluster_strength = clamp(to_num(row["whale_cluster_strength"]), 0.0, 1.0)
+    whale_cluster_dir = to_num(row["whale_cluster_dir"])
+    elite_whale_active = int(to_num(row["elite_whale_active"]))
+    spot_to_futures_ratio = spot_volume / max(1.0, futures_volume) if futures_volume > 0 else 0.0
+    futures_to_spot_ratio = futures_volume / max(1.0, spot_volume) if spot_volume > 0 else 0.0
+
+    if vol_vs_ma <= 0.95:
+        compression += 0.22 * weight
+    if vol_vs_ma <= 0.8:
+        compression += 0.28 * weight
 
     if vol_vs_ma >= 1.25:
         breakout += 0.45 * weight
@@ -395,8 +797,66 @@ def volume_breaker_score(tf: str, row: sqlite3.Row) -> dict[str, float]:
 
     if futures_lead > 0:
         bull += 0.2 * weight
+        lead_bull += 0.2 * weight
     elif futures_lead < 0:
         bear += 0.2 * weight
+        lead_bear += 0.2 * weight
+
+    if futures_volume > spot_volume * 1.8 and futures_volume > 0:
+        if futures_lead > 0:
+            bull += 0.15 * weight
+            futures_bull += 0.15 * weight
+            lead_bull += 0.18 * weight
+        elif futures_lead < 0:
+            bear += 0.15 * weight
+            futures_bear += 0.15 * weight
+            lead_bear += 0.18 * weight
+
+    if spot_delta > 0:
+        spot_bull += 0.12 * weight * clamp(abs(spot_delta) / max(1.0, spot_volume), 0.0, 1.0)
+    elif spot_delta < 0:
+        spot_bear += 0.12 * weight * clamp(abs(spot_delta) / max(1.0, spot_volume), 0.0, 1.0)
+
+    if futures_delta > 0:
+        futures_bull += 0.16 * weight * clamp(abs(futures_delta) / max(1.0, futures_volume), 0.0, 1.0)
+    elif futures_delta < 0:
+        futures_bear += 0.16 * weight * clamp(abs(futures_delta) / max(1.0, futures_volume), 0.0, 1.0)
+
+    if spot_to_futures_ratio >= 1.2 and spot_volume > 0:
+        if spot_delta >= 0:
+            lead_bull += 0.14 * weight
+        else:
+            lead_bear += 0.14 * weight
+
+    if futures_to_spot_ratio >= 1.8 and futures_volume > 0:
+        if futures_delta >= 0:
+            lead_bull += 0.14 * weight
+        else:
+            lead_bear += 0.14 * weight
+
+    if futures_delta_lead > 0:
+        lead_bull += 0.08 * weight
+    elif futures_delta_lead < 0:
+        lead_bear += 0.08 * weight
+
+    whale_bias = (bull_pressure - bear_pressure) + whale_sentiment * 2.0
+    if whale_bias > 0:
+        whale_bull += (0.12 + 0.18 * whale_confidence) * weight
+    elif whale_bias < 0:
+        whale_bear += (0.12 + 0.18 * whale_confidence) * weight
+
+    if whale_cluster and whale_cluster_strength > 0:
+        cluster_boost = (0.08 + 0.16 * whale_cluster_strength) * weight
+        if whale_cluster_dir > 0:
+            whale_bull += cluster_boost
+        elif whale_cluster_dir < 0:
+            whale_bear += cluster_boost
+
+    if elite_whale_active:
+        if whale_bias >= 0:
+            whale_bull += 0.12 * weight
+        else:
+            whale_bear += 0.12 * weight
 
     if delta_pct > 0.25:
         bull += 0.18 * weight
@@ -422,12 +882,102 @@ def volume_breaker_score(tf: str, row: sqlite3.Row) -> dict[str, float]:
         if dist_low >= 0.75:
             bear += 0.18 * weight
 
+    if bos_wick == 1 and wick_ratio >= 0.55 and vol_vs_ma >= 1.2:
+        rejection += 0.28 * weight
+
+    if body_ratio <= 0.3 and wick_ratio >= 0.55 and vol_vs_ma >= 1.3 and same_dir == 0:
+        exhaustion += 0.25 * weight
+
+    bull += spot_bull + futures_bull + lead_bull + whale_bull
+    bear += spot_bear + futures_bear + lead_bear + whale_bear
+
     return {
         "bull": bull,
         "bear": bear,
         "breakout": breakout,
         "rejection": rejection,
+        "compression": compression,
+        "exhaustion": exhaustion,
+        "spot_bull": spot_bull,
+        "spot_bear": spot_bear,
+        "futures_bull": futures_bull,
+        "futures_bear": futures_bear,
+        "lead_bull": lead_bull,
+        "lead_bear": lead_bear,
+        "whale_bull": whale_bull,
+        "whale_bear": whale_bear,
     }
+
+
+def reclaim_quality_score(
+    direction: str,
+    aggregate: dict[str, object],
+    cycle_total: dict[str, object],
+    volume_total: dict[str, object],
+) -> float:
+    direction_margin = float(aggregate["direction_margin"])
+    regime_margin = float(cycle_total["regime_bull"]) - float(cycle_total["regime_bear"])
+    micro_margin = float(cycle_total["micro_bull"]) - float(cycle_total["micro_bear"])
+    lifecycle_margin = float(cycle_total["lifecycle_bull"]) - float(cycle_total["lifecycle_bear"])
+    lifecycle_pressure = float(cycle_total["lifecycle_pressure"])
+    lifecycle_maturity = float(cycle_total["lifecycle_maturity"])
+    volume_margin = float(volume_total["bull"]) - float(volume_total["bear"])
+    breakout_force = float(volume_total["breakout"])
+    rejection_force = float(volume_total["rejection"]) + float(volume_total["exhaustion"])
+    compression_force = float(aggregate["compression"]) + float(volume_total["compression"])
+
+    sign = 1.0 if direction == "long" else -1.0
+    dir_support = direction_margin * sign
+    regime_support = regime_margin * sign
+    micro_support = micro_margin * sign
+    lifecycle_support = lifecycle_margin * sign
+    volume_support = volume_margin * sign
+
+    score = 0.0
+    # Good reclaim often fires while local pressure still leans against the reclaim direction.
+    score += 2.0 * band_score(dir_support, -10.0, -2.5, 2.5)
+    score += 2.5 * band_score(micro_support, -26.0, -12.0, -1.0)
+    score += 1.5 * band_score(regime_support, -18.0, -8.0, 3.0)
+    score += 1.2 * band_score(lifecycle_support, -12.0, -5.0, 2.0)
+    score += 1.0 * band_score(lifecycle_pressure, 1.0, 5.0, 12.0)
+    score += 1.5 * band_score(lifecycle_maturity, 8.0, 24.0, 45.0)
+    score += 1.0 * band_score(volume_support, 4.0, 10.0, 18.0)
+    score += 1.4 * band_score(breakout_force, 2.0, 6.0, 10.5)
+    score += 0.9 * band_score(rejection_force, 0.15, 0.9, 1.8)
+    score += 1.3 * band_score(compression_force, 20.0, 38.0, 60.0)
+
+    # Outcome-guided bias: good long reclaims in the current slices tend to come
+    # from mature cycles with enough pressure, but before the state already gets
+    # too loud/obvious on direction + volume + compression.
+    if direction == "long":
+        if (
+            lifecycle_maturity >= 26.0
+            and lifecycle_pressure >= 3.8
+            and dir_support <= 1.5
+            and volume_margin <= 11.8
+            and compression_force <= 47.0
+        ):
+            score += 1.6
+        if compression_force >= 55.0:
+            score -= 0.9
+        if volume_margin >= 13.5:
+            score -= 0.7
+        if lifecycle_maturity < 20.0:
+            score -= 0.8
+    else:
+        if (
+            lifecycle_pressure <= 5.5
+            and lifecycle_maturity <= 29.5
+            and compression_force >= 40.0
+            and rejection_force <= 0.9
+        ):
+            score += 1.2
+        if lifecycle_pressure >= 7.5:
+            score -= 0.8
+        if lifecycle_maturity >= 34.0:
+            score -= 0.7
+
+    return score
 
 
 def determine_signal_family(
@@ -441,15 +991,21 @@ def determine_signal_family(
     bull = aggregate["bull"] + cycle_total["regime_bull"] + volume_total["bull"]
     bear = aggregate["bear"] + cycle_total["regime_bear"] + volume_total["bear"]
     compression = aggregate["compression"]
+    compression += volume_total["compression"]
     direction_margin = bull - bear
     micro_margin = cycle_total["micro_bull"] - cycle_total["micro_bear"]
+    lifecycle_margin = cycle_total["lifecycle_bull"] - cycle_total["lifecycle_bear"]
     conflict = cycle_total["conflict"]
     breakout_force = volume_total["breakout"]
+    rejection_force = volume_total["rejection"] + volume_total["exhaustion"]
+    maturity = cycle_total["lifecycle_maturity"]
+    reclaim_quality_long = reclaim_quality_score("long", aggregate, cycle_total, volume_total)
+    reclaim_quality_short = reclaim_quality_score("short", aggregate, cycle_total, volume_total)
 
     if compression >= 6.0 and conflict <= 3.8:
-        if bear >= 12.0 and direction_margin <= -2.0 and micro_margin <= -1.5:
+        if bear >= 12.0 and direction_margin <= -2.0 and micro_margin <= -1.5 and lifecycle_margin <= 0.25:
             return "zone_fade", "short"
-        if bull >= 12.0 and direction_margin >= 2.0 and micro_margin >= 1.5:
+        if bull >= 12.0 and direction_margin >= 2.0 and micro_margin >= 1.5 and lifecycle_margin >= -0.25:
             return "zone_fade", "long"
 
     if int(to_num(row["bos_bull"])) == 1 or int(to_num(row["sw_bullish"])) == 1 or (int(to_num(row["choch"])) == 1 and to_num(row["delta_pct"]) > 0):
@@ -457,10 +1013,10 @@ def determine_signal_family(
             bull >= 10.5
             and direction_margin >= 1.5
             and recent_bear_max >= 8.0
-            and (micro_margin >= 0.35 or breakout_force >= 2.0)
+            and (micro_margin >= 0.35 or breakout_force >= 2.0 or lifecycle_margin >= 0.35 or reclaim_quality_long >= 8.2)
         ):
             return "reclaim_run", "long"
-        if bull >= 10.5 and direction_margin >= 1.2 and breakout_force >= 2.2 and micro_margin >= 0.5:
+        if bull >= 10.5 and direction_margin >= 1.2 and breakout_force >= 2.2 and (micro_margin >= 0.5 or maturity >= 1.0):
             return "breaker_run", "long"
 
     if int(to_num(row["bos_bear"])) == 1 or (int(to_num(row["choch"])) == 1 and to_num(row["delta_pct"]) < 0):
@@ -468,16 +1024,16 @@ def determine_signal_family(
             bear >= 10.5
             and direction_margin <= -1.5
             and recent_bull_max >= 8.0
-            and (micro_margin <= -0.35 or breakout_force >= 2.0)
+            and (micro_margin <= -0.35 or breakout_force >= 2.0 or lifecycle_margin <= -0.35 or reclaim_quality_short >= 8.2)
         ):
             return "reclaim_run", "short"
-        if bear >= 10.5 and direction_margin <= -1.2 and breakout_force >= 2.2 and micro_margin <= -0.5:
+        if bear >= 10.5 and direction_margin <= -1.2 and breakout_force >= 2.2 and (micro_margin <= -0.5 or maturity >= 1.0):
             return "breaker_run", "short"
 
     if compression >= 5.0 and conflict >= 3.2:
-        if cycle_total["micro_bear"] >= 4.0 and bull >= bear:
+        if cycle_total["micro_bear"] >= 4.0 and bull >= bear and rejection_force >= 0.4:
             return "micro_fakeout", "short"
-        if cycle_total["micro_bull"] >= 4.0 and bear >= bull:
+        if cycle_total["micro_bull"] >= 4.0 and bear >= bull and rejection_force >= 0.4:
             return "micro_fakeout", "long"
 
     return None, None
@@ -521,16 +1077,14 @@ def infer_transition_phase(signal: dict[str, object]) -> str:
     return str(signal["family"])
 
 
-def find_recent_structure_stop(
-    conn: sqlite3.Connection,
-    ts: int,
+def find_recent_structure_stop_from_rows(
+    rows_1m: list[dict],
+    bar_index: int,
     direction: str,
     lookback: int = 8,
 ) -> float | None:
-    rows = conn.execute(
-        "SELECT high, low FROM candles_1m WHERE timestamp < ? ORDER BY timestamp DESC LIMIT ?",
-        (ts, lookback),
-    ).fetchall()
+    start = max(0, bar_index - lookback)
+    rows = rows_1m[start:bar_index]
     if not rows:
         return None
     if direction == "long":
@@ -538,8 +1092,8 @@ def find_recent_structure_stop(
     return max(to_num(row["high"]) for row in rows)
 
 
-def evaluate_trade(
-    conn: sqlite3.Connection,
+def evaluate_trade_on_rows(
+    rows_1m: list[dict],
     signal: dict,
     entry_model: str,
     stop_model: str,
@@ -547,7 +1101,7 @@ def evaluate_trade(
     horizon_bars: int = 90,
     fill_bars: int = 20,
 ) -> dict[str, object]:
-    ts = int(signal["timestamp"])
+    bar_index = int(signal["bar_index"])
     direction = str(signal["direction"])
     signal_close = to_num(signal["close"])
     signal_high = to_num(signal["high"])
@@ -567,7 +1121,7 @@ def evaluate_trade(
         risk = signal_range
         stop_price = entry_price - risk if direction == "long" else entry_price + risk
     else:
-        structure = find_recent_structure_stop(conn, ts, direction)
+        structure = find_recent_structure_stop_from_rows(rows_1m, bar_index, direction)
         if structure is None:
             return {"filled": False, "result": "no_structure_stop"}
         stop_price = structure
@@ -578,10 +1132,7 @@ def evaluate_trade(
     target_r = TARGET_MODELS[target_model]
     target_price = entry_price + risk * target_r if direction == "long" else entry_price - risk * target_r
 
-    future = conn.execute(
-        "SELECT timestamp, open, high, low, close FROM candles_1m WHERE timestamp > ? ORDER BY timestamp LIMIT ?",
-        (ts, horizon_bars),
-    ).fetchall()
+    future = rows_1m[bar_index + 1 : bar_index + 1 + horizon_bars]
     if not future:
         return {"filled": False, "result": "no_future"}
 
@@ -611,7 +1162,7 @@ def evaluate_trade(
                 stop_price = entry_price - signal_range if direction == "long" else entry_price + signal_range
                 risk = signal_range
             else:
-                structure = find_recent_structure_stop(conn, ts, direction)
+                structure = find_recent_structure_stop_from_rows(rows_1m, bar_index, direction)
                 if structure is None:
                     return {"filled": False, "result": "no_structure_stop"}
                 stop_price = structure
@@ -693,16 +1244,16 @@ def evaluate_trade(
 
 
 def aggregate_candidate_context(
-    row: sqlite3.Row,
-    mtf_rows: dict[str, sqlite3.Row],
-    thresholds: dict[str, TfThresholds],
+    row_ts: int,
+    mtf_timestamps: dict[str, int | None],
+    snapshot_score_cache: dict[str, dict[int, dict[str, float]]],
 ) -> dict[str, object]:
     total = {"bull": 0.0, "bear": 0.0, "compression": 0.0, "event": 0.0}
     per_tf: dict[str, dict[str, float]] = {}
-    for tf, tf_row in {"1m": row, **mtf_rows}.items():
-        if tf_row is None:
+    for tf, tf_ts in {"1m": row_ts, **mtf_timestamps}.items():
+        if tf_ts is None:
             continue
-        snapshot = score_snapshot(tf, tf_row, thresholds[tf])
+        snapshot = snapshot_score_cache[tf][int(tf_ts)]
         per_tf[tf] = snapshot
         for key in total:
             total[key] += snapshot[key]
@@ -712,34 +1263,66 @@ def aggregate_candidate_context(
 
 
 def aggregate_cycle_context(
-    cycle_cache: dict[str, dict[int, dict[str, float]]],
-    row: sqlite3.Row,
-    mtf_rows: dict[str, sqlite3.Row],
+    cycle_state_cache: dict[str, dict[int, dict[str, float]]],
+    row_ts: int,
+    mtf_timestamps: dict[str, int | None],
 ) -> dict[str, object]:
-    total = {"regime_bull": 0.0, "regime_bear": 0.0, "micro_bull": 0.0, "micro_bear": 0.0, "conflict": 0.0}
+    total = {
+        "regime_bull": 0.0,
+        "regime_bear": 0.0,
+        "micro_bull": 0.0,
+        "micro_bear": 0.0,
+        "conflict": 0.0,
+        "lifecycle_bull": 0.0,
+        "lifecycle_bear": 0.0,
+        "lifecycle_pressure": 0.0,
+        "lifecycle_maturity": 0.0,
+    }
     per_tf: dict[str, dict[str, float]] = {}
-    for tf, tf_row in {"1m": row, **mtf_rows}.items():
-        if tf_row is None:
+    for tf, tf_ts in {"1m": row_ts, **mtf_timestamps}.items():
+        if tf_ts is None:
             continue
-        metrics = cycle_cache[tf][int(tf_row["timestamp"])]
-        score = cycle_score(tf, metrics)
-        per_tf[tf] = {**metrics, **score}
-        for key in total:
-            total[key] += score[key]
+        scored = cycle_state_cache[tf][int(tf_ts)]
+        per_tf[tf] = scored
+        total["regime_bull"] += scored["regime_bull"]
+        total["regime_bear"] += scored["regime_bear"]
+        total["micro_bull"] += scored["micro_bull"]
+        total["micro_bear"] += scored["micro_bear"]
+        total["conflict"] += scored["conflict"]
+        total["lifecycle_bull"] += scored["bull"]
+        total["lifecycle_bear"] += scored["bear"]
+        total["lifecycle_pressure"] += scored["pressure"]
+        total["lifecycle_maturity"] += scored["maturity"]
     total["per_tf"] = per_tf
     return total
 
 
 def aggregate_volume_breaker_context(
-    row: sqlite3.Row,
-    mtf_rows: dict[str, sqlite3.Row],
+    row_ts: int,
+    mtf_timestamps: dict[str, int | None],
+    volume_score_cache: dict[str, dict[int, dict[str, float]]],
 ) -> dict[str, object]:
-    total = {"bull": 0.0, "bear": 0.0, "breakout": 0.0, "rejection": 0.0}
+    total = {
+        "bull": 0.0,
+        "bear": 0.0,
+        "breakout": 0.0,
+        "rejection": 0.0,
+        "compression": 0.0,
+        "exhaustion": 0.0,
+        "spot_bull": 0.0,
+        "spot_bear": 0.0,
+        "futures_bull": 0.0,
+        "futures_bear": 0.0,
+        "lead_bull": 0.0,
+        "lead_bear": 0.0,
+        "whale_bull": 0.0,
+        "whale_bear": 0.0,
+    }
     per_tf: dict[str, dict[str, float]] = {}
-    for tf, tf_row in {"1m": row, **mtf_rows}.items():
-        if tf_row is None:
+    for tf, tf_ts in {"1m": row_ts, **mtf_timestamps}.items():
+        if tf_ts is None:
             continue
-        score = volume_breaker_score(tf, tf_row)
+        score = volume_score_cache[tf][int(tf_ts)]
         per_tf[tf] = score
         for key in total:
             total[key] += score[key]
@@ -764,7 +1347,9 @@ def candidate_reason(
     pieces.append(f"compression {aggregate['compression']:.1f}")
     pieces.append(f"reg {cycle_total['regime_bull'] - cycle_total['regime_bear']:.1f}")
     pieces.append(f"micro {cycle_total['micro_bull'] - cycle_total['micro_bear']:.1f}")
+    pieces.append(f"life {cycle_total['lifecycle_bull'] - cycle_total['lifecycle_bear']:.1f}")
     pieces.append(f"vol {volume_total['bull'] - volume_total['bear']:.1f}")
+    pieces.append(f"rej {volume_total['rejection'] + volume_total['exhaustion']:.1f}")
     pieces.append(f"dir {direction}")
     return " | ".join(pieces)
 
@@ -794,6 +1379,29 @@ def classify_transition(first: dict[str, object], second: dict[str, object]) -> 
     if first_direction != second_direction:
         return f"flip:{first_family}:{first_direction}->{second_family}:{second_direction}"
     return None
+
+
+def transition_gate_passes(
+    transition_type: str,
+    second_signal: dict[str, object],
+    gate_profiles: dict[str, dict[str, object]] | None = None,
+) -> bool:
+    if transition_type == "failed_fakeout_flip:short->long":
+        return False
+    if transition_type == "failed_fakeout_flip:long->short":
+        return False
+    profile = (gate_profiles or {}).get(transition_type)
+    if not profile:
+        return True
+    metric = str(profile["metric"])
+    mode = str(profile["mode"])
+    threshold = float(profile["threshold"])
+    value = to_num(second_signal.get(metric))
+    if mode == "min":
+        return value >= threshold
+    if mode == "max":
+        return value <= threshold
+    return True
 
 
 def mine_signal_transitions(signals: list[dict[str, object]], max_gap_ms: int = 45 * 60_000) -> list[dict[str, object]]:
@@ -836,8 +1444,34 @@ def mine_signal_transitions(signals: list[dict[str, object]], max_gap_ms: int = 
     return transitions
 
 
+def summarize_transition_gate_keep_rates(
+    all_transitions: list[dict[str, object]],
+    gated_transitions: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    all_counts = collections.Counter(str(item["type"]) for item in all_transitions)
+    gated_counts = collections.Counter(str(item["type"]) for item in gated_transitions)
+    summary: list[dict[str, object]] = []
+    for transition_type, total in all_counts.items():
+        kept = gated_counts.get(transition_type, 0)
+        summary.append(
+            {
+                "transitionType": transition_type,
+                "total": total,
+                "kept": kept,
+                "keepRate": round(kept / max(1, total) * 100.0, 2),
+            }
+        )
+    summary.sort(key=lambda item: (item["keepRate"], item["kept"], item["total"]), reverse=True)
+    return summary
+
+
+def bucket_month(ts: int) -> str:
+    dt = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
+    return f"{dt.year:04d}-{dt.month:02d}"
+
+
 def evaluate_transition_families(
-    conn: sqlite3.Connection,
+    rows_1m: list[dict],
     transitions: list[dict[str, object]],
 ) -> list[dict[str, object]]:
     buckets: dict[tuple[str, str], dict[str, object]] = {}
@@ -865,14 +1499,19 @@ def evaluate_transition_families(
                             "sumRiskPct": 0.0,
                             "sumFirstScore": 0.0,
                             "sumSecondScore": 0.0,
+                            "winsCount": 0,
+                            "stopsCount": 0,
+                            "winContext": {key: 0.0 for key in TRANSITION_CONTEXT_KEYS},
+                            "stopContext": {key: 0.0 for key in TRANSITION_CONTEXT_KEYS},
+                            "records": [],
                             "samples": [],
                         },
                     )
                     bucket["count"] += 1
                     bucket["sumFirstScore"] += float(transition["first"]["score"])
                     bucket["sumSecondScore"] += float(transition["second"]["score"])
-                    outcome = evaluate_trade(
-                        conn=conn,
+                    outcome = evaluate_trade_on_rows(
+                        rows_1m=rows_1m,
                         signal=second_signal,
                         entry_model=entry_model,
                         stop_model=stop_model,
@@ -885,16 +1524,32 @@ def evaluate_transition_families(
                     result = str(outcome["result"])
                     if result in ("clean_run", "reclaimed_run"):
                         bucket["wins"] += 1
+                        bucket["winsCount"] += 1
+                        for key in TRANSITION_CONTEXT_KEYS:
+                            bucket["winContext"][key] += to_num(second_signal.get(key))
                     if result == "clean_run":
                         bucket["cleanRuns"] += 1
                     elif result == "reclaimed_run":
                         bucket["reclaimedRuns"] += 1
                     elif result == "stopped":
                         bucket["stopped"] += 1
+                        bucket["stopsCount"] += 1
+                        for key in TRANSITION_CONTEXT_KEYS:
+                            bucket["stopContext"][key] += to_num(second_signal.get(key))
                     else:
                         bucket["timedOut"] += 1
                     if outcome.get("flip_run_after_stop"):
                         bucket["flipRunsAfterStop"] += 1
+                    bucket["records"].append(
+                        {
+                            "timestamp": int(second_signal["timestamp"]),
+                            "time": str(second_signal.get("time") or ""),
+                            "result": result,
+                            "riskPct": round(float(outcome.get("risk_pct") or 0.0), 4),
+                            "flipAfterStop": bool(outcome.get("flip_run_after_stop")),
+                            **{key: to_num(second_signal.get(key)) for key in TRANSITION_CONTEXT_KEYS},
+                        }
+                    )
                     if len(bucket["samples"]) < 4:
                         bucket["samples"].append(
                             {
@@ -915,6 +1570,11 @@ def evaluate_transition_families(
             continue
         wins = int(bucket["wins"])
         stopped = int(bucket["stopped"])
+        wins_count = max(1, int(bucket["winsCount"]))
+        stops_count = max(1, int(bucket["stopsCount"]))
+        win_context = {key: round(float(bucket["winContext"][key]) / wins_count, 4) for key in TRANSITION_CONTEXT_KEYS}
+        stop_context = {key: round(float(bucket["stopContext"][key]) / stops_count, 4) for key in TRANSITION_CONTEXT_KEYS}
+        context_edge = {key: round(win_context[key] - stop_context[key], 4) for key in TRANSITION_CONTEXT_KEYS}
         leaderboard.append(
             {
                 "transitionType": bucket["transitionType"],
@@ -932,6 +1592,10 @@ def evaluate_transition_families(
                 "avgRiskPct": round(float(bucket["sumRiskPct"]) / filled, 4),
                 "avgFirstScore": round(float(bucket["sumFirstScore"]) / max(1, int(bucket["count"])), 2),
                 "avgSecondScore": round(float(bucket["sumSecondScore"]) / max(1, int(bucket["count"])), 2),
+                "winContext": win_context,
+                "stopContext": stop_context,
+                "contextEdge": context_edge,
+                "records": bucket["records"],
                 "samples": bucket["samples"],
             }
         )
@@ -994,6 +1658,10 @@ def summarize_transition_families(
                 "avgRiskPct": item["avgRiskPct"],
                 "avgFirstScore": item["avgFirstScore"],
                 "avgSecondScore": item["avgSecondScore"],
+                "winContext": item["winContext"],
+                "stopContext": item["stopContext"],
+                "contextEdge": item["contextEdge"],
+                "records": item.get("records", []),
                 "samples": item["samples"],
             }
         )
@@ -1009,41 +1677,676 @@ def summarize_transition_families(
     return summary
 
 
+def summarize_transition_context_edges(
+    transition_families: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    summary: list[dict[str, object]] = []
+    for item in transition_families:
+        edge = dict(item.get("contextEdge") or {})
+        summary.append(
+            {
+                "transitionType": item["transitionType"],
+                "bestSetup": item["bestSetup"],
+                "filled": item["filled"],
+                "winRate": item["winRate"],
+                "topPositiveEdges": sorted(edge.items(), key=lambda kv: kv[1], reverse=True)[:5],
+                "topNegativeEdges": sorted(edge.items(), key=lambda kv: kv[1])[:5],
+                "winContext": item.get("winContext", {}),
+                "stopContext": item.get("stopContext", {}),
+            }
+        )
+    summary.sort(key=lambda item: (item["winRate"], item["filled"]), reverse=True)
+    return summary
+
+
+def summarize_reclaim_threshold_sweeps(
+    transition_families: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    target_families = {
+        "fakeout_to_reclaim:short->long": "reclaim_quality_long",
+        "fakeout_to_reclaim:long->short": "reclaim_quality_short",
+        "failed_fakeout_flip:short->long": "reclaim_quality_long",
+        "failed_fakeout_flip:long->short": "reclaim_quality_short",
+    }
+    transition_map = {str(item["transitionType"]): item for item in transition_families}
+    summary: list[dict[str, object]] = []
+    for family, quality_key in target_families.items():
+        item = transition_map.get(family)
+        if not item:
+            continue
+        records = list(item.get("records") or [])
+        if len(records) < 4:
+            continue
+        baseline_filled = len(records)
+        baseline_wins = sum(1 for record in records if record["result"] in ("clean_run", "reclaimed_run"))
+        baseline_rate = round(baseline_wins / max(1, baseline_filled) * 100.0, 2)
+
+        edge = dict(item.get("contextEdge") or {})
+        metric_prefs: list[tuple[str, str]] = []
+        for metric, value in sorted(edge.items(), key=lambda kv: kv[1], reverse=True)[:3]:
+            metric_prefs.append((metric, "min"))
+        for metric, value in sorted(edge.items(), key=lambda kv: kv[1])[:3]:
+            metric_prefs.append((metric, "max"))
+        if quality_key not in {metric for metric, _ in metric_prefs}:
+            metric_prefs.insert(0, (quality_key, "min"))
+
+        seen: set[tuple[str, str]] = set()
+        sweeps: list[dict[str, object]] = []
+        for metric, mode in metric_prefs:
+            if (metric, mode) in seen:
+                continue
+            seen.add((metric, mode))
+            values = [to_num(record.get(metric)) for record in records]
+            thresholds = unique_quantile_thresholds(values)
+            best: dict[str, object] | None = None
+            for threshold in thresholds:
+                if mode == "min":
+                    subset = [record for record in records if to_num(record.get(metric)) >= threshold]
+                else:
+                    subset = [record for record in records if to_num(record.get(metric)) <= threshold]
+                filled = len(subset)
+                if filled < 4:
+                    continue
+                wins = sum(1 for record in subset if record["result"] in ("clean_run", "reclaimed_run"))
+                win_rate = wins / max(1, filled) * 100.0
+                if win_rate < baseline_rate or wins == 0:
+                    continue
+                candidate = {
+                    "metric": metric,
+                    "mode": mode,
+                    "threshold": round(float(threshold), 4),
+                    "filled": filled,
+                    "wins": wins,
+                    "winRate": round(win_rate, 2),
+                    "deltaVsBaseline": round(win_rate - baseline_rate, 2),
+                }
+                if best is None:
+                    best = candidate
+                    continue
+                best_score = (float(best["winRate"]), int(best["filled"]), int(best["wins"]))
+                candidate_score = (float(candidate["winRate"]), int(candidate["filled"]), int(candidate["wins"]))
+                if candidate_score > best_score:
+                    best = candidate
+            if best:
+                sweeps.append(best)
+
+        sweeps.sort(key=lambda entry: (float(entry["winRate"]), int(entry["filled"]), int(entry["wins"])), reverse=True)
+        summary.append(
+            {
+                "transitionType": family,
+                "bestSetup": item["bestSetup"],
+                "baselineFilled": baseline_filled,
+                "baselineWins": baseline_wins,
+                "baselineWinRate": baseline_rate,
+                "sweeps": sweeps[:6],
+            }
+        )
+    summary.sort(key=lambda item: (float(item["baselineWinRate"]), int(item["baselineFilled"])), reverse=True)
+    return summary
+
+
+def summarize_robust_transition_gates(
+    transition_families: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    target_families = (
+        "fakeout_to_reclaim:short->long",
+        "fakeout_to_reclaim:long->short",
+        "fakeout_to_breaker:short",
+        "fakeout_to_breaker:long",
+    )
+    transition_map = {str(item["transitionType"]): item for item in transition_families}
+    summary: list[dict[str, object]] = []
+    for family in target_families:
+        item = transition_map.get(family)
+        if not item:
+            continue
+        records = list(item.get("records") or [])
+        if len(records) < 16:
+            continue
+
+        buckets: dict[str, list[dict[str, object]]] = collections.defaultdict(list)
+        for record in records:
+            buckets[bucket_month(int(record["timestamp"]))].append(record)
+        active_buckets = [bucket for bucket in buckets.values() if len(bucket) >= 6]
+        if len(active_buckets) < 3:
+            continue
+
+        context_edge = dict(item.get("contextEdge") or {})
+        metric_candidates: list[tuple[str, str]] = []
+        for metric, value in sorted(context_edge.items(), key=lambda kv: kv[1], reverse=True)[:4]:
+            metric_candidates.append((metric, "min"))
+        for metric, value in sorted(context_edge.items(), key=lambda kv: kv[1])[:4]:
+            metric_candidates.append((metric, "max"))
+
+        seen: set[tuple[str, str]] = set()
+        gate_candidates: list[dict[str, object]] = []
+        for metric, mode in metric_candidates:
+            if (metric, mode) in seen:
+                continue
+            seen.add((metric, mode))
+            all_values = [to_num(record.get(metric)) for record in records]
+            thresholds = unique_quantile_thresholds(all_values)
+            for threshold in thresholds:
+                per_bucket: list[dict[str, object]] = []
+                total_kept = 0
+                total_records = 0
+                total_kept_wins = 0
+                for bucket in active_buckets:
+                    base_filled = len(bucket)
+                    base_wins = sum(1 for record in bucket if record["result"] in ("clean_run", "reclaimed_run"))
+                    base_rate = base_wins / max(1, base_filled) * 100.0
+                    if mode == "min":
+                        subset = [record for record in bucket if to_num(record.get(metric)) >= threshold]
+                    else:
+                        subset = [record for record in bucket if to_num(record.get(metric)) <= threshold]
+                    kept = len(subset)
+                    if kept < 4:
+                        continue
+                    wins = sum(1 for record in subset if record["result"] in ("clean_run", "reclaimed_run"))
+                    kept_rate = wins / max(1, kept) * 100.0
+                    per_bucket.append(
+                        {
+                            "baseRate": base_rate,
+                            "keptRate": kept_rate,
+                            "uplift": kept_rate - base_rate,
+                            "baseFilled": base_filled,
+                            "kept": kept,
+                        }
+                    )
+                    total_records += base_filled
+                    total_kept += kept
+                    total_kept_wins += wins
+                if len(per_bucket) < 3:
+                    continue
+                mean_uplift = sum(entry["uplift"] for entry in per_bucket) / len(per_bucket)
+                positive_share = sum(1 for entry in per_bucket if entry["uplift"] > 0.0) / len(per_bucket)
+                overall_win_rate = total_kept_wins / max(1, total_kept) * 100.0
+                baseline_total_wins = sum(
+                    sum(1 for record in bucket if record["result"] in ("clean_run", "reclaimed_run"))
+                    for bucket in active_buckets
+                )
+                baseline_total_filled = sum(len(bucket) for bucket in active_buckets)
+                baseline_win_rate = baseline_total_wins / max(1, baseline_total_filled) * 100.0
+                keep_rate = total_kept / max(1, total_records) * 100.0
+                if mean_uplift <= 0.0 or positive_share < 0.5 or keep_rate < 10.0:
+                    continue
+                gate_candidates.append(
+                    {
+                        "transitionType": family,
+                        "metric": metric,
+                        "mode": mode,
+                        "threshold": round(float(threshold), 4),
+                        "meanUplift": round(mean_uplift, 2),
+                        "positiveShare": round(positive_share * 100.0, 2),
+                        "baselineWinRate": round(baseline_win_rate, 2),
+                        "gatedWinRate": round(overall_win_rate, 2),
+                        "keepRate": round(keep_rate, 2),
+                        "evaluatedBuckets": len(per_bucket),
+                    }
+                )
+
+        gate_candidates.sort(
+            key=lambda item: (
+                float(item["meanUplift"]),
+                float(item["positiveShare"]),
+                float(item["keepRate"]),
+                float(item["gatedWinRate"]),
+            ),
+            reverse=True,
+        )
+        if gate_candidates:
+            summary.append(
+                {
+                    "transitionType": family,
+                    "bestGates": gate_candidates[:6],
+                }
+            )
+    return summary
+
+
+def build_transition_gate_profiles(
+    robust_transition_gates: list[dict[str, object]],
+) -> dict[str, dict[str, object]]:
+    profiles: dict[str, dict[str, object]] = {}
+    for item in robust_transition_gates:
+        gates = list(item.get("bestGates") or [])
+        if not gates:
+            continue
+        best = gates[0]
+        if (
+            float(best["meanUplift"]) >= 2.0
+            and float(best["positiveShare"]) >= 60.0
+            and float(best["keepRate"]) >= 15.0
+        ):
+            profiles[str(item["transitionType"])] = {
+                "metric": str(best["metric"]),
+                "mode": str(best["mode"]),
+                "threshold": float(best["threshold"]),
+                "meanUplift": float(best["meanUplift"]),
+                "positiveShare": float(best["positiveShare"]),
+                "keepRate": float(best["keepRate"]),
+            }
+    return profiles
+
+
+def split_records_by_month(records: list[dict[str, object]]) -> dict[str, list[dict[str, object]]]:
+    buckets: dict[str, list[dict[str, object]]] = collections.defaultdict(list)
+    for record in records:
+        buckets[bucket_month(int(record["timestamp"]))].append(record)
+    return dict(sorted(buckets.items()))
+
+
+def summarize_robust_gates_for_records(
+    transition_type: str,
+    records: list[dict[str, object]],
+    metric_candidates: list[tuple[str, str]] | None = None,
+    min_bucket_records: int = 4,
+) -> list[dict[str, object]]:
+    bucketed = split_records_by_month(records)
+    active_buckets = [bucket for bucket in bucketed.values() if len(bucket) >= min_bucket_records]
+    if len(active_buckets) < 3:
+        return []
+
+    gate_candidates: list[dict[str, object]] = []
+    seen: set[tuple[str, str]] = set()
+    candidates = metric_candidates or [(metric, mode) for metric in TRANSITION_CONTEXT_KEYS for mode in ("min", "max")]
+    for metric, mode in candidates:
+        if (metric, mode) in seen:
+            continue
+        seen.add((metric, mode))
+        all_values = [to_num(record.get(metric)) for record in records]
+        thresholds = unique_quantile_thresholds(all_values)
+        for threshold in thresholds:
+            per_bucket: list[dict[str, float]] = []
+            total_kept = 0
+            total_records = 0
+            total_kept_wins = 0
+            total_bucket_wins = 0
+            for bucket in active_buckets:
+                base_filled = len(bucket)
+                base_wins = sum(1 for record in bucket if record["result"] in ("clean_run", "reclaimed_run"))
+                base_rate = base_wins / max(1, base_filled) * 100.0
+                if mode == "min":
+                    subset = [record for record in bucket if to_num(record.get(metric)) >= threshold]
+                else:
+                    subset = [record for record in bucket if to_num(record.get(metric)) <= threshold]
+                kept = len(subset)
+                if kept < min_bucket_records:
+                    continue
+                wins = sum(1 for record in subset if record["result"] in ("clean_run", "reclaimed_run"))
+                kept_rate = wins / max(1, kept) * 100.0
+                per_bucket.append(
+                    {
+                        "baseRate": base_rate,
+                        "keptRate": kept_rate,
+                        "uplift": kept_rate - base_rate,
+                    }
+                )
+                total_records += base_filled
+                total_kept += kept
+                total_kept_wins += wins
+                total_bucket_wins += base_wins
+            if len(per_bucket) < 3:
+                continue
+            mean_uplift = sum(entry["uplift"] for entry in per_bucket) / len(per_bucket)
+            positive_share = sum(1 for entry in per_bucket if entry["uplift"] > 0.0) / len(per_bucket)
+            keep_rate = total_kept / max(1, total_records) * 100.0
+            baseline_win_rate = total_bucket_wins / max(1, total_records) * 100.0
+            gated_win_rate = total_kept_wins / max(1, total_kept) * 100.0
+            if mean_uplift <= 0.0 or positive_share < 0.5 or keep_rate < 10.0:
+                continue
+            gate_candidates.append(
+                {
+                    "transitionType": transition_type,
+                    "metric": metric,
+                    "mode": mode,
+                    "threshold": round(float(threshold), 4),
+                    "meanUplift": round(mean_uplift, 2),
+                    "positiveShare": round(positive_share * 100.0, 2),
+                    "baselineWinRate": round(baseline_win_rate, 2),
+                    "gatedWinRate": round(gated_win_rate, 2),
+                    "keepRate": round(keep_rate, 2),
+                    "evaluatedBuckets": len(per_bucket),
+                }
+            )
+    gate_candidates.sort(
+        key=lambda item: (
+            float(item["meanUplift"]),
+            float(item["positiveShare"]),
+            float(item["keepRate"]),
+            float(item["gatedWinRate"]),
+        ),
+        reverse=True,
+    )
+    return gate_candidates
+
+
+def choose_transition_profile(
+    transition_type: str,
+    records: list[dict[str, object]],
+    metric_candidates: list[tuple[str, str]] | None = None,
+) -> dict[str, object] | None:
+    candidates = summarize_robust_gates_for_records(transition_type, records, metric_candidates=metric_candidates)
+    if not candidates:
+        return None
+    best = candidates[0]
+    if (
+        float(best["meanUplift"]) >= 2.0
+        and float(best["positiveShare"]) >= 60.0
+        and float(best["keepRate"]) >= 15.0
+    ):
+        return {
+            "metric": str(best["metric"]),
+            "mode": str(best["mode"]),
+            "threshold": float(best["threshold"]),
+            "meanUplift": float(best["meanUplift"]),
+            "positiveShare": float(best["positiveShare"]),
+            "keepRate": float(best["keepRate"]),
+        }
+    return None
+
+
+def transition_record_passes(record: dict[str, object], profile: dict[str, object]) -> bool:
+    metric = str(profile["metric"])
+    mode = str(profile["mode"])
+    threshold = float(profile["threshold"])
+    value = to_num(record.get(metric))
+    if mode == "min":
+        return value >= threshold
+    if mode == "max":
+        return value <= threshold
+    return True
+
+
+def choose_best_setup_from_train(
+    transition_leaderboard: list[dict[str, object]],
+    transition_type: str,
+    train_bucket_keys: set[str],
+    min_filled: int = 20,
+) -> dict[str, object] | None:
+    best: dict[str, object] | None = None
+    best_score: tuple[float, int, int, float] | None = None
+    for item in transition_leaderboard:
+        if str(item["transitionType"]) != transition_type:
+            continue
+        train_records = [
+            record
+            for record in (item.get("records") or [])
+            if bucket_month(int(record["timestamp"])) in train_bucket_keys
+        ]
+        filled = len(train_records)
+        if filled < min_filled:
+            continue
+        wins = sum(1 for record in train_records if record["result"] in ("clean_run", "reclaimed_run"))
+        clean = sum(1 for record in train_records if record["result"] == "clean_run")
+        reclaimed = sum(1 for record in train_records if record["result"] == "reclaimed_run")
+        avg_risk = sum(float(record["riskPct"]) for record in train_records) / max(1, filled)
+        score = (wins / max(1, filled) * 100.0, filled, clean + reclaimed, -avg_risk)
+        if best_score is None or score > best_score:
+            best_score = score
+            best = {
+                "transitionType": transition_type,
+                "setup": item["setup"],
+                "records": train_records,
+            }
+    return best
+
+
+def summarize_walk_forward_validation(
+    transition_leaderboard: list[dict[str, object]],
+    robust_transition_gates: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    target_families = (
+        "fakeout_to_reclaim:short->long",
+        "fakeout_to_reclaim:long->short",
+        "fakeout_to_breaker:short",
+        "fakeout_to_breaker:long",
+    )
+    full_records_by_family: dict[str, list[dict[str, object]]] = collections.defaultdict(list)
+    for item in transition_leaderboard:
+        full_records_by_family[str(item["transitionType"])].extend(item.get("records") or [])
+
+    summaries: list[dict[str, object]] = []
+    family_gate_metrics: dict[str, list[tuple[str, str]]] = {}
+    for item in robust_transition_gates:
+        family_gate_metrics[str(item["transitionType"])] = [
+            (str(gate["metric"]), str(gate["mode"])) for gate in (item.get("bestGates") or [])[:4]
+        ]
+    for family in target_families:
+        all_records = sorted(full_records_by_family.get(family) or [], key=lambda record: int(record["timestamp"]))
+        if not all_records:
+            continue
+        family_buckets = split_records_by_month(all_records)
+        bucket_keys = list(family_buckets.keys())
+        if len(bucket_keys) < 6:
+            continue
+        bucket_results: list[dict[str, object]] = []
+        train_setup_names: collections.Counter[str] = collections.Counter()
+        train_profiles: list[dict[str, object]] = []
+        for idx in range(4, len(bucket_keys)):
+            train_bucket_keys = set(bucket_keys[:idx])
+            test_key = bucket_keys[idx]
+            chosen_setup = choose_best_setup_from_train(transition_leaderboard, family, train_bucket_keys)
+            if not chosen_setup:
+                continue
+            profile = choose_transition_profile(
+                family,
+                list(chosen_setup["records"]),
+                metric_candidates=family_gate_metrics.get(family),
+            )
+            if not profile:
+                continue
+            test_setup_item = next(
+                (
+                    item
+                    for item in transition_leaderboard
+                    if str(item["transitionType"]) == family and str(item["setup"]) == str(chosen_setup["setup"])
+                ),
+                None,
+            )
+            if test_setup_item is None:
+                continue
+            test_records = [
+                record
+                for record in (test_setup_item.get("records") or [])
+                if bucket_month(int(record["timestamp"])) == test_key
+            ]
+            if len(test_records) < 4:
+                continue
+            baseline_wins = sum(1 for record in test_records if record["result"] in ("clean_run", "reclaimed_run"))
+            baseline_rate = baseline_wins / max(1, len(test_records)) * 100.0
+            kept_records = [record for record in test_records if transition_record_passes(record, profile)]
+            if len(kept_records) < 2:
+                continue
+            kept_wins = sum(1 for record in kept_records if record["result"] in ("clean_run", "reclaimed_run"))
+            kept_rate = kept_wins / max(1, len(kept_records)) * 100.0
+            train_setup_names[str(chosen_setup["setup"])] += 1
+            train_profiles.append(profile)
+            bucket_results.append(
+                {
+                    "testBucket": test_key,
+                    "setup": str(chosen_setup["setup"]),
+                    "baselineFilled": len(test_records),
+                    "baselineWins": baseline_wins,
+                    "baselineWinRate": round(baseline_rate, 2),
+                    "gatedFilled": len(kept_records),
+                    "gatedWins": kept_wins,
+                    "gatedWinRate": round(kept_rate, 2),
+                    "uplift": round(kept_rate - baseline_rate, 2),
+                    "keepRate": round(len(kept_records) / max(1, len(test_records)) * 100.0, 2),
+                    "profile": profile,
+                }
+            )
+        if not bucket_results:
+            continue
+        baseline_filled = sum(item["baselineFilled"] for item in bucket_results)
+        baseline_wins = sum(item["baselineWins"] for item in bucket_results)
+        gated_filled = sum(item["gatedFilled"] for item in bucket_results)
+        gated_wins = sum(item["gatedWins"] for item in bucket_results)
+        positive_buckets = sum(1 for item in bucket_results if item["uplift"] > 0.0)
+        summaries.append(
+            {
+                "transitionType": family,
+                "bucketsEvaluated": len(bucket_results),
+                "baselineFilled": baseline_filled,
+                "baselineWins": baseline_wins,
+                "baselineWinRate": round(baseline_wins / max(1, baseline_filled) * 100.0, 2),
+                "gatedFilled": gated_filled,
+                "gatedWins": gated_wins,
+                "gatedWinRate": round(gated_wins / max(1, gated_filled) * 100.0, 2),
+                "avgUplift": round(sum(item["uplift"] for item in bucket_results) / len(bucket_results), 2),
+                "positiveBuckets": positive_buckets,
+                "positiveBucketShare": round(positive_buckets / len(bucket_results) * 100.0, 2),
+                "avgKeepRate": round(sum(item["keepRate"] for item in bucket_results) / len(bucket_results), 2),
+                "mostCommonSetup": train_setup_names.most_common(1)[0][0],
+                "recentProfiles": train_profiles[-3:],
+                "bucketResults": bucket_results[-8:],
+            }
+        )
+    summaries.sort(
+        key=lambda item: (
+            float(item["gatedWinRate"]),
+            float(item["avgUplift"]),
+            int(item["gatedFilled"]),
+        ),
+        reverse=True,
+    )
+    return summaries
+
+
+def summarize_family_contexts(candidates: list[dict[str, object]]) -> list[dict[str, object]]:
+    buckets: dict[str, dict[str, float]] = {}
+    for candidate in candidates:
+        family_direction = f"{candidate['signal_family']}:{candidate['direction']}"
+        bucket = buckets.setdefault(
+            family_direction,
+            {
+                "count": 0.0,
+                "score": 0.0,
+                "direction_margin": 0.0,
+                "regime_margin": 0.0,
+                "micro_margin": 0.0,
+                "lifecycle_margin": 0.0,
+                "lifecycle_pressure": 0.0,
+                "lifecycle_maturity": 0.0,
+                "volume_margin": 0.0,
+                "spot_margin": 0.0,
+                "futures_margin": 0.0,
+                "lead_margin": 0.0,
+                "whale_margin": 0.0,
+                "breakout_force": 0.0,
+                "rejection_force": 0.0,
+                "compression_force": 0.0,
+            },
+        )
+        bucket["count"] += 1.0
+        bucket["score"] += float(candidate["score"])
+        bucket["direction_margin"] += float(candidate["aggregate"]["direction_margin"])
+        bucket["regime_margin"] += float(candidate["cycle_total"]["regime_bull"]) - float(candidate["cycle_total"]["regime_bear"])
+        bucket["micro_margin"] += float(candidate["cycle_total"]["micro_bull"]) - float(candidate["cycle_total"]["micro_bear"])
+        bucket["lifecycle_margin"] += float(candidate["cycle_total"]["lifecycle_bull"]) - float(candidate["cycle_total"]["lifecycle_bear"])
+        bucket["lifecycle_pressure"] += float(candidate["cycle_total"]["lifecycle_pressure"])
+        bucket["lifecycle_maturity"] += float(candidate["cycle_total"]["lifecycle_maturity"])
+        bucket["volume_margin"] += float(candidate["volume_total"]["bull"]) - float(candidate["volume_total"]["bear"])
+        bucket["spot_margin"] += float(candidate["volume_total"]["spot_bull"]) - float(candidate["volume_total"]["spot_bear"])
+        bucket["futures_margin"] += float(candidate["volume_total"]["futures_bull"]) - float(candidate["volume_total"]["futures_bear"])
+        bucket["lead_margin"] += float(candidate["volume_total"]["lead_bull"]) - float(candidate["volume_total"]["lead_bear"])
+        bucket["whale_margin"] += float(candidate["volume_total"]["whale_bull"]) - float(candidate["volume_total"]["whale_bear"])
+        bucket["breakout_force"] += float(candidate["volume_total"]["breakout"])
+        bucket["rejection_force"] += float(candidate["volume_total"]["rejection"]) + float(candidate["volume_total"]["exhaustion"])
+        bucket["compression_force"] += float(candidate["aggregate"]["compression"]) + float(candidate["volume_total"]["compression"])
+
+    summary: list[dict[str, object]] = []
+    for family_direction, bucket in buckets.items():
+        count = max(1.0, bucket["count"])
+        summary.append(
+            {
+                "familyDirection": family_direction,
+                "count": int(bucket["count"]),
+                "avgScore": round(bucket["score"] / count, 2),
+                "avgDirectionMargin": round(bucket["direction_margin"] / count, 2),
+                "avgRegimeMargin": round(bucket["regime_margin"] / count, 2),
+                "avgMicroMargin": round(bucket["micro_margin"] / count, 2),
+                "avgLifecycleMargin": round(bucket["lifecycle_margin"] / count, 2),
+                "avgLifecyclePressure": round(bucket["lifecycle_pressure"] / count, 2),
+                "avgLifecycleMaturity": round(bucket["lifecycle_maturity"] / count, 2),
+                "avgVolumeMargin": round(bucket["volume_margin"] / count, 2),
+                "avgSpotMargin": round(bucket["spot_margin"] / count, 2),
+                "avgFuturesMargin": round(bucket["futures_margin"] / count, 2),
+                "avgLeadMargin": round(bucket["lead_margin"] / count, 2),
+                "avgWhaleMargin": round(bucket["whale_margin"] / count, 2),
+                "avgBreakoutForce": round(bucket["breakout_force"] / count, 2),
+                "avgRejectionForce": round(bucket["rejection_force"] / count, 2),
+                "avgCompressionForce": round(bucket["compression_force"] / count, 2),
+            }
+        )
+    summary.sort(key=lambda item: (item["avgScore"], item["count"]), reverse=True)
+    return summary
+
+
 def run_research(
     db_path: str,
     signal_threshold: float,
     cooldown_bars: int,
     since_ts: int | None = None,
     until_ts: int | None = None,
+    use_warehouse: bool = False,
 ) -> dict[str, object]:
-    conn = _connect(db_path)
-    higher_rows = {
-        tf: load_timeframe_rows(conn, tf, since_ts=since_ts, until_ts=until_ts)
-        for tf in HIGHER_TFS
-    }
+    conn = connect_research_backend(db_path, use_warehouse=use_warehouse)
     thresholds = {}
-    if since_ts is None and until_ts is None:
-        rows_1m = conn.execute(f"SELECT {FEATURE_COLUMNS} FROM candles_1m ORDER BY timestamp").fetchall()
+    if use_warehouse or db_path.endswith(".duckdb"):
+        joined_rows = build_joined_warehouse_rows(conn, since_ts=since_ts, until_ts=until_ts)
+        rows_1m, higher_rows = split_joined_mtf_rows(joined_rows)
     else:
-        clauses = []
-        params: list[int] = []
-        if since_ts is not None:
-            clauses.append("timestamp >= ?")
-            params.append(since_ts)
-        if until_ts is not None:
-            clauses.append("timestamp <= ?")
-            params.append(until_ts)
-        where = " AND ".join(clauses)
-        rows_1m = conn.execute(
-            f"SELECT {FEATURE_COLUMNS} FROM candles_1m WHERE {where} ORDER BY timestamp",
-            tuple(params),
-        ).fetchall()
-    thresholds["1m"] = build_thresholds(rows_1m)
-    for tf, rows in higher_rows.items():
-        thresholds[tf] = build_thresholds(rows)
-    cycle_cache = build_cycle_metric_cache(conn, {"1m": rows_1m, **higher_rows})
+        higher_rows = {
+            tf: load_timeframe_rows(conn, tf, since_ts=since_ts, until_ts=until_ts)
+            for tf in HIGHER_TFS
+        }
+        if since_ts is None and until_ts is None:
+            rows_1m = query_rows(conn, f"SELECT {FEATURE_COLUMNS} FROM candles_1m ORDER BY timestamp")
+        else:
+            clauses = []
+            params: list[int] = []
+            if since_ts is not None:
+                clauses.append("timestamp >= ?")
+                params.append(since_ts)
+            if until_ts is not None:
+                clauses.append("timestamp <= ?")
+                params.append(until_ts)
+            where = " AND ".join(clauses)
+            rows_1m = query_rows(
+                conn,
+                f"SELECT {FEATURE_COLUMNS} FROM candles_1m WHERE {where} ORDER BY timestamp",
+                tuple(params),
+            )
 
-    cursors = {tf: TfCursor(rows=rows) for tf, rows in higher_rows.items()}
+    threshold_rows = {
+        tf: load_timeframe_rows(conn, tf, since_ts=since_ts, until_ts=until_ts, columns=THRESHOLD_COLUMNS)
+        for tf in RESEARCH_TFS
+    }
+    thresholds["1m"] = build_thresholds(threshold_rows["1m"])
+    for tf in HIGHER_TFS:
+        thresholds[tf] = build_thresholds(threshold_rows[tf])
+
+    if use_warehouse or db_path.endswith(".duckdb"):
+        cycle_rows = {
+            "1m": [{"timestamp": row["timestamp"], "close": row["close"]} for row in rows_1m],
+            **{
+                tf: [{"timestamp": row["timestamp"], "close": row["close"]} for row in higher_rows[tf]]
+                for tf in HIGHER_TFS
+            },
+        }
+    else:
+        cycle_rows = {
+            tf: load_timeframe_rows(conn, tf, since_ts=None, until_ts=until_ts, columns=CYCLE_TS_COLUMNS)
+            for tf in RESEARCH_TFS
+        }
+    cycle_cache = build_cycle_metric_cache(conn, cycle_rows)
+    cycle_state_cache = build_cycle_state_score_cache(cycle_cache)
+    snapshot_score_cache = build_snapshot_score_cache({"1m": rows_1m, **higher_rows}, thresholds)
+    volume_score_cache = build_volume_breaker_score_cache({"1m": rows_1m, **higher_rows})
+
+    cursors = {tf: TfCursor(rows=rows) for tf, rows in higher_rows.items()} if not (use_warehouse or db_path.endswith(".duckdb")) else None
 
     recent_bull: collections.deque[float] = collections.deque(maxlen=30)
     recent_bear: collections.deque[float] = collections.deque(maxlen=30)
@@ -1053,10 +2356,14 @@ def run_research(
 
     for bar_index, row in enumerate(rows_1m):
         ts = int(row["timestamp"])
-        mtf_rows = {tf: cursor.advance_to(ts) for tf, cursor in cursors.items()}
-        aggregate = aggregate_candidate_context(row, mtf_rows, thresholds)
-        cycle_total = aggregate_cycle_context(cycle_cache, row, mtf_rows)
-        volume_total = aggregate_volume_breaker_context(row, mtf_rows)
+        if cursors is None:
+            mtf_timestamps = mtf_timestamps_from_joined_row(joined_rows[bar_index])
+        else:
+            mtf_rows = {tf: cursor.advance_to(ts) for tf, cursor in cursors.items()}
+            mtf_timestamps = mtf_timestamps_from_rows(mtf_rows)
+        aggregate = aggregate_candidate_context(ts, mtf_timestamps, snapshot_score_cache)
+        cycle_total = aggregate_cycle_context(cycle_state_cache, ts, mtf_timestamps)
+        volume_total = aggregate_volume_breaker_context(ts, mtf_timestamps, volume_score_cache)
         signal_family, direction = determine_signal_family(
             row=row,
             aggregate=aggregate,
@@ -1065,6 +2372,8 @@ def run_research(
             cycle_total=cycle_total,
             volume_total=volume_total,
         )
+        reclaim_quality_long = reclaim_quality_score("long", aggregate, cycle_total, volume_total)
+        reclaim_quality_short = reclaim_quality_score("short", aggregate, cycle_total, volume_total)
         recent_bull.append(float(aggregate["bull"]))
         recent_bear.append(float(aggregate["bear"]))
         if not signal_family or not direction:
@@ -1090,6 +2399,7 @@ def run_research(
 
         candidates.append(
             {
+                "bar_index": bar_index,
                 "timestamp": ts,
                 "open": to_num(row["open"]),
                 "high": to_num(row["high"]),
@@ -1118,6 +2428,15 @@ def run_research(
                 "m1_futures_minus_spot_volume": to_num(row["futures_minus_spot_volume"]),
                 "m1_dist_swing_high": to_num(row["dist_swing_high"]),
                 "m1_dist_swing_low": to_num(row["dist_swing_low"]),
+                "lifecycle_margin": float(cycle_total["lifecycle_bull"]) - float(cycle_total["lifecycle_bear"]),
+                "lifecycle_pressure": float(cycle_total["lifecycle_pressure"]),
+                "lifecycle_maturity": float(cycle_total["lifecycle_maturity"]),
+                "volume_margin": float(volume_total["bull"]) - float(volume_total["bear"]),
+                "breakout_force": float(volume_total["breakout"]),
+                "rejection_force": float(volume_total["rejection"]) + float(volume_total["exhaustion"]),
+                "compression_force": float(aggregate["compression"]) + float(volume_total["compression"]),
+                "reclaim_quality_long": float(reclaim_quality_long),
+                "reclaim_quality_short": float(reclaim_quality_short),
             }
         )
         family_signal_counts[f"{signal_family}:{direction}"] += 1
@@ -1154,8 +2473,8 @@ def run_research(
                     )
                     bucket["trades"] += 1
                     bucket["sum_score"] += float(signal["score"])
-                    outcome = evaluate_trade(
-                        conn=conn,
+                    outcome = evaluate_trade_on_rows(
+                        rows_1m=rows_1m,
                         signal=signal,
                         entry_model=entry_model,
                         stop_model=stop_model,
@@ -1199,6 +2518,7 @@ def run_research(
                             today_cases.append(sample_entry)
                             current = today_signals.get(int(signal["timestamp"]))
                             candidate = {
+                                "bar_index": int(signal["bar_index"]),
                                 "timestamp": int(signal["timestamp"]),
                                 "time": fmt_ts(int(signal["timestamp"])),
                                 "family": family,
@@ -1218,8 +2538,43 @@ def run_research(
                                     float(signal["cycle_total"]["micro_bull"]) - float(signal["cycle_total"]["micro_bear"]),
                                     4,
                                 ),
+                                "lifecycle_margin": round(
+                                    float(signal["cycle_total"]["lifecycle_bull"]) - float(signal["cycle_total"]["lifecycle_bear"]),
+                                    4,
+                                ),
+                                "lifecycle_pressure": round(float(signal["cycle_total"]["lifecycle_pressure"]), 4),
+                                "lifecycle_maturity": round(float(signal["cycle_total"]["lifecycle_maturity"]), 4),
+                                "volume_margin": round(
+                                    float(signal["volume_total"]["bull"]) - float(signal["volume_total"]["bear"]),
+                                    4,
+                                ),
+                                "spot_margin": round(
+                                    float(signal["volume_total"]["spot_bull"]) - float(signal["volume_total"]["spot_bear"]),
+                                    4,
+                                ),
+                                "futures_margin": round(
+                                    float(signal["volume_total"]["futures_bull"]) - float(signal["volume_total"]["futures_bear"]),
+                                    4,
+                                ),
+                                "lead_margin": round(
+                                    float(signal["volume_total"]["lead_bull"]) - float(signal["volume_total"]["lead_bear"]),
+                                    4,
+                                ),
+                                "whale_margin": round(
+                                    float(signal["volume_total"]["whale_bull"]) - float(signal["volume_total"]["whale_bear"]),
+                                    4,
+                                ),
                                 "breakout_force": round(float(signal["volume_total"]["breakout"]), 4),
-                                "rejection_force": round(float(signal["volume_total"]["rejection"]), 4),
+                                "rejection_force": round(
+                                    float(signal["volume_total"]["rejection"]) + float(signal["volume_total"]["exhaustion"]),
+                                    4,
+                                ),
+                                "compression_force": round(
+                                    float(signal["aggregate"]["compression"]) + float(signal["volume_total"]["compression"]),
+                                    4,
+                                ),
+                                "reclaim_quality_long": round(float(signal["reclaim_quality_long"]), 4),
+                                "reclaim_quality_short": round(float(signal["reclaim_quality_short"]), 4),
                                 "m1_bos_bull": int(signal["m1_bos_bull"]),
                                 "m1_bos_bear": int(signal["m1_bos_bear"]),
                                 "m1_choch": int(signal["m1_choch"]),
@@ -1233,6 +2588,7 @@ def run_research(
                                 today_signals[int(signal["timestamp"])] = candidate
                     current_best = best_signals.get(int(signal["timestamp"]))
                     global_candidate = {
+                        "bar_index": int(signal["bar_index"]),
                         "timestamp": int(signal["timestamp"]),
                         "time": fmt_ts(int(signal["timestamp"])),
                         "family": family,
@@ -1256,8 +2612,43 @@ def run_research(
                             float(signal["cycle_total"]["micro_bull"]) - float(signal["cycle_total"]["micro_bear"]),
                             4,
                         ),
+                        "lifecycle_margin": round(
+                            float(signal["cycle_total"]["lifecycle_bull"]) - float(signal["cycle_total"]["lifecycle_bear"]),
+                            4,
+                        ),
+                        "lifecycle_pressure": round(float(signal["cycle_total"]["lifecycle_pressure"]), 4),
+                        "lifecycle_maturity": round(float(signal["cycle_total"]["lifecycle_maturity"]), 4),
+                        "volume_margin": round(
+                            float(signal["volume_total"]["bull"]) - float(signal["volume_total"]["bear"]),
+                            4,
+                        ),
+                        "spot_margin": round(
+                            float(signal["volume_total"]["spot_bull"]) - float(signal["volume_total"]["spot_bear"]),
+                            4,
+                        ),
+                        "futures_margin": round(
+                            float(signal["volume_total"]["futures_bull"]) - float(signal["volume_total"]["futures_bear"]),
+                            4,
+                        ),
+                        "lead_margin": round(
+                            float(signal["volume_total"]["lead_bull"]) - float(signal["volume_total"]["lead_bear"]),
+                            4,
+                        ),
+                        "whale_margin": round(
+                            float(signal["volume_total"]["whale_bull"]) - float(signal["volume_total"]["whale_bear"]),
+                            4,
+                        ),
                         "breakout_force": round(float(signal["volume_total"]["breakout"]), 4),
-                        "rejection_force": round(float(signal["volume_total"]["rejection"]), 4),
+                        "rejection_force": round(
+                            float(signal["volume_total"]["rejection"]) + float(signal["volume_total"]["exhaustion"]),
+                            4,
+                        ),
+                        "compression_force": round(
+                            float(signal["aggregate"]["compression"]) + float(signal["volume_total"]["compression"]),
+                            4,
+                        ),
+                        "reclaim_quality_long": round(float(signal["reclaim_quality_long"]), 4),
+                        "reclaim_quality_short": round(float(signal["reclaim_quality_short"]), 4),
                         "m1_bos_bull": int(signal["m1_bos_bull"]),
                         "m1_bos_bear": int(signal["m1_bos_bear"]),
                         "m1_choch": int(signal["m1_choch"]),
@@ -1327,13 +2718,42 @@ def run_research(
     all_transitions = mine_signal_transitions(list(best_signals.values()))
     today_transition_list = mine_signal_transitions(list(today_signals.values()))
     transition_counts = collections.Counter(item["type"] for item in all_transitions)
-    transition_leaderboard_full = evaluate_transition_families(conn, all_transitions)
+    transition_leaderboard_full = evaluate_transition_families(rows_1m, all_transitions)
     transition_family_summary = summarize_transition_families(transition_leaderboard_full)
-    conn.close()
+    transition_context_edges = summarize_transition_context_edges(transition_family_summary)
+    reclaim_threshold_sweeps = summarize_reclaim_threshold_sweeps(transition_family_summary)
+    robust_transition_gates = summarize_robust_transition_gates(transition_family_summary)
+    transition_gate_profiles = build_transition_gate_profiles(robust_transition_gates)
+    walk_forward_transitions = summarize_walk_forward_validation(transition_leaderboard_full, robust_transition_gates)
+    gated_transitions = [
+        item
+        for item in all_transitions
+        if transition_gate_passes(str(item["type"]), item["secondSignal"], transition_gate_profiles)
+    ]
+    gated_transition_counts = collections.Counter(item["type"] for item in gated_transitions)
+    gated_transition_keep_rates = summarize_transition_gate_keep_rates(all_transitions, gated_transitions)
+    gated_transition_leaderboard_full = evaluate_transition_families(rows_1m, gated_transitions)
+    gated_transition_family_summary = summarize_transition_families(gated_transition_leaderboard_full)
+    transition_leaderboard_public = [
+        {key: value for key, value in item.items() if key != "records"} for item in transition_leaderboard_full[:24]
+    ]
+    transition_family_summary_public = [
+        {key: value for key, value in item.items() if key != "records"} for item in transition_family_summary
+    ]
+    gated_transition_leaderboard_public = [
+        {key: value for key, value in item.items() if key != "records"} for item in gated_transition_leaderboard_full[:24]
+    ]
+    gated_transition_family_summary_public = [
+        {key: value for key, value in item.items() if key != "records"} for item in gated_transition_family_summary
+    ]
+    family_context_summary = summarize_family_contexts(candidates)
+    if hasattr(conn, "close"):
+        conn.close()
 
     return {
         "generatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
         "dbPath": db_path,
+        "backend": "duckdb" if (use_warehouse or db_path.endswith(".duckdb")) else "sqlite",
         "sinceTs": since_ts,
         "untilTs": until_ts,
         "totalCandles1m": len(rows_1m),
@@ -1343,8 +2763,18 @@ def run_research(
         "familySignalCounts": dict(sorted(family_signal_counts.items())),
         "transitionCounts": dict(sorted(transition_counts.items())),
         "leaderboard": leaderboard[:18],
-        "transitionLeaderboard": transition_leaderboard_full[:24],
-        "transitionFamilies": transition_family_summary,
+        "transitionLeaderboard": transition_leaderboard_public,
+        "transitionFamilies": transition_family_summary_public,
+        "transitionContextEdges": transition_context_edges,
+        "reclaimThresholdSweeps": reclaim_threshold_sweeps,
+        "robustTransitionGates": robust_transition_gates,
+        "transitionGateProfiles": transition_gate_profiles,
+        "walkForwardTransitions": walk_forward_transitions,
+        "gatedTransitionCounts": dict(sorted(gated_transition_counts.items())),
+        "gatedTransitionKeepRates": gated_transition_keep_rates,
+        "gatedTransitionLeaderboard": gated_transition_leaderboard_public,
+        "gatedTransitionFamilies": gated_transition_family_summary_public,
+        "familyContexts": family_context_summary,
         "sampleCases": sample_cases[:16],
         "todayCases": today_cases[:24],
         "todaySignals": sorted(today_signals.values(), key=lambda item: (item["score"], item["timestamp"]), reverse=True)[:40],
@@ -1368,6 +2798,32 @@ def markdown_report(report: dict[str, object]) -> str:
     for family_direction, count in report["familySignalCounts"].items():
         lines.append(f"- `{family_direction}`: `{count}` signals")
     lines.extend(["", "## Top Setups", ""])
+    if report.get("familyContexts"):
+        lines.extend(["## Family Context", ""])
+        for item in report["familyContexts"][:12]:
+            lines.extend(
+                [
+                    f"### {item['familyDirection']}",
+                    f"- count: `{item['count']}`",
+                    f"- avg score: `{item['avgScore']}`",
+                    f"- avg direction margin: `{item['avgDirectionMargin']}`",
+                    f"- avg regime margin: `{item['avgRegimeMargin']}`",
+                    f"- avg micro margin: `{item['avgMicroMargin']}`",
+                    f"- avg lifecycle margin: `{item['avgLifecycleMargin']}`",
+                    f"- avg lifecycle pressure: `{item['avgLifecyclePressure']}`",
+                    f"- avg lifecycle maturity: `{item['avgLifecycleMaturity']}`",
+                    f"- avg volume margin: `{item['avgVolumeMargin']}`",
+                    f"- avg spot margin: `{item['avgSpotMargin']}`",
+                    f"- avg futures margin: `{item['avgFuturesMargin']}`",
+                    f"- avg lead margin: `{item['avgLeadMargin']}`",
+                    f"- avg whale margin: `{item['avgWhaleMargin']}`",
+                    f"- avg breakout force: `{item['avgBreakoutForce']}`",
+                    f"- avg rejection force: `{item['avgRejectionForce']}`",
+                    f"- avg compression force: `{item['avgCompressionForce']}`",
+                    "",
+                ]
+            )
+        lines.extend(["## Top Setups", ""])
     for item in report["leaderboard"]:
         lines.extend(
             [
@@ -1420,6 +2876,71 @@ def markdown_report(report: dict[str, object]) -> str:
                     "",
                 ]
             )
+    if report.get("transitionContextEdges"):
+        lines.extend(["## Transition Context Edges", ""])
+        for item in report["transitionContextEdges"][:12]:
+            lines.extend(
+                [
+                    f"### {item['transitionType']} · {item['bestSetup']}",
+                    f"- filled: `{item['filled']}`",
+                    f"- win rate: `{item['winRate']}%`",
+                    f"- top positive edges: "
+                    + ", ".join(f"`{key} {value:+.2f}`" for key, value in item["topPositiveEdges"]),
+                    f"- top negative edges: "
+                    + ", ".join(f"`{key} {value:+.2f}`" for key, value in item["topNegativeEdges"]),
+                    "",
+                ]
+            )
+    if report.get("reclaimThresholdSweeps"):
+        lines.extend(["## Reclaim Threshold Sweeps", ""])
+        for item in report["reclaimThresholdSweeps"]:
+            lines.extend(
+                [
+                    f"### {item['transitionType']} · {item['bestSetup']}",
+                    f"- baseline: `{item['baselineWins']}/{item['baselineFilled']}` · `{item['baselineWinRate']}%`",
+                ]
+            )
+            for sweep in item["sweeps"]:
+                comparator = ">=" if sweep["mode"] == "min" else "<="
+                lines.append(
+                    f"- `{sweep['metric']} {comparator} {sweep['threshold']}` -> `{sweep['wins']}/{sweep['filled']}` · `{sweep['winRate']}%` (`{sweep['deltaVsBaseline']:+.2f}pp`)"
+                )
+            lines.append("")
+    if report.get("robustTransitionGates"):
+        lines.extend(["## Robust Transition Gates", ""])
+        for item in report["robustTransitionGates"]:
+            lines.append(f"### {item['transitionType']}")
+            for gate in item["bestGates"][:5]:
+                comparator = ">=" if gate["mode"] == "min" else "<="
+                lines.append(
+                    f"- `{gate['metric']} {comparator} {gate['threshold']}` -> uplift `{gate['meanUplift']:+.2f}pp`, gated `{gate['gatedWinRate']}%`, keep `{gate['keepRate']}%`, positive slices `{gate['positiveShare']}%`"
+                )
+            lines.append("")
+    if report.get("transitionGateProfiles"):
+        lines.extend(["## Transition Gate Profiles", ""])
+        for transition_type, profile in report["transitionGateProfiles"].items():
+            comparator = ">=" if profile["mode"] == "min" else "<="
+            lines.append(
+                f"- `{transition_type}`: `{profile['metric']} {comparator} {profile['threshold']}` "
+                f"(uplift `{profile['meanUplift']:+.2f}pp`, keep `{profile['keepRate']}%`, positive slices `{profile['positiveShare']}%`)"
+            )
+        lines.append("")
+    if report.get("walkForwardTransitions"):
+        lines.extend(["## Walk-Forward Validation", ""])
+        for item in report["walkForwardTransitions"]:
+            lines.extend(
+                [
+                    f"### {item['transitionType']}",
+                    f"- buckets evaluated: `{item['bucketsEvaluated']}`",
+                    f"- baseline: `{item['baselineWins']}/{item['baselineFilled']}` · `{item['baselineWinRate']}%`",
+                    f"- gated: `{item['gatedWins']}/{item['gatedFilled']}` · `{item['gatedWinRate']}%`",
+                    f"- avg uplift: `{item['avgUplift']:+.2f}pp`",
+                    f"- positive buckets: `{item['positiveBuckets']}` / `{item['bucketsEvaluated']}` (`{item['positiveBucketShare']}%`)",
+                    f"- avg keep rate: `{item['avgKeepRate']}%`",
+                    f"- most common train setup: `{item['mostCommonSetup']}`",
+                    "",
+                ]
+            )
     if report["todaySignals"]:
         lines.extend(["## Heutige Signale", ""])
         for case in report["todaySignals"]:
@@ -1432,6 +2953,29 @@ def markdown_report(report: dict[str, object]) -> str:
         for transition_type, count in report["transitionCounts"].items():
             lines.append(f"- `{transition_type}`: `{count}`")
         lines.append("")
+    if report.get("gatedTransitionKeepRates"):
+        lines.extend(["## Gated Transition Keep Rates", ""])
+        for item in report["gatedTransitionKeepRates"][:16]:
+            lines.append(
+                f"- `{item['transitionType']}`: kept `{item['kept']}/{item['total']}` (`{item['keepRate']}%`)"
+            )
+        lines.append("")
+    if report.get("gatedTransitionFamilies"):
+        lines.extend(["## Gated Transition Families", ""])
+        for item in report["gatedTransitionFamilies"][:12]:
+            lines.extend(
+                [
+                    f"### {item['transitionType']}",
+                    f"- best setup: `{item['bestSetup']}`",
+                    f"- filled: `{item['filled']}`",
+                    f"- win rate: `{item['winRate']}%`",
+                    f"- clean runs: `{item['cleanRuns']}`",
+                    f"- reclaimed runs: `{item['reclaimedRuns']}`",
+                    f"- stopped: `{item['stopped']}`",
+                    f"- avg risk: `{item['avgRiskPct']}%`",
+                    "",
+                ]
+            )
     if report.get("todayTransitions"):
         lines.extend(["## Heutige Transitionen", ""])
         for item in report["todayTransitions"]:
@@ -1447,6 +2991,7 @@ def markdown_report(report: dict[str, object]) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--db", default=DEFAULT_DB_PATH)
+    parser.add_argument("--warehouse", action="store_true")
     parser.add_argument("--signal-threshold", type=float, default=14.0)
     parser.add_argument("--cooldown-bars", type=int, default=10)
     parser.add_argument("--since-ts", type=int)
@@ -1461,6 +3006,7 @@ def main() -> None:
         cooldown_bars=args.cooldown_bars,
         since_ts=args.since_ts,
         until_ts=args.until_ts,
+        use_warehouse=args.warehouse,
     )
 
     if args.json_out:
