@@ -13,6 +13,16 @@ It uses:
   - stopped
   - timed_out
   - flip_run_after_stop
+
+Method guards:
+- higher timeframe context only joins fully closed candles
+  (candle timestamps are open times, so timestamp + tf duration must be <= signal ts)
+- round-trip costs (fee + slippage bps per side) are deducted from every trade;
+  net expectancy in R is reported next to win rates (timed_out marked to market)
+- percentile thresholds and gate/sweep quantiles are estimated on a train
+  prefix of the bars (--train-fraction, default 0.65) and frozen afterwards;
+  the walk-forward report evaluates only OOS months with train-fixed setup+gate
+- win rates carry Wilson 95% intervals
 """
 
 from __future__ import annotations
@@ -125,11 +135,14 @@ class TfThresholds:
 class TfCursor:
     rows: list[dict]
     index: int = 0
+    tf_ms: int = 0
 
     def advance_to(self, ts: int) -> dict | None:
-        while self.index + 1 < len(self.rows) and int(self.rows[self.index + 1]["timestamp"]) <= ts:
+        # Only fully closed candles may join: candle timestamps are open times,
+        # so a candle is known at ts only if timestamp + tf_ms <= ts.
+        while self.index + 1 < len(self.rows) and int(self.rows[self.index + 1]["timestamp"]) + self.tf_ms <= ts:
             self.index += 1
-        if self.rows and int(self.rows[self.index]["timestamp"]) <= ts:
+        if self.rows and int(self.rows[self.index]["timestamp"]) + self.tf_ms <= ts:
             return self.rows[self.index]
         return None
 
@@ -162,6 +175,18 @@ def percentile(values: list[float], p: float) -> float:
     ordered = sorted(values)
     idx = int(round((len(ordered) - 1) * p))
     return float(ordered[max(0, min(len(ordered) - 1, idx))])
+
+
+def wilson_ci95(wins: int, n: int) -> list[float]:
+    """Wilson 95% interval for a win rate, returned as [lo, hi] in percent."""
+    if n <= 0:
+        return [0.0, 0.0]
+    z = 1.96
+    p = wins / n
+    denom = 1.0 + z * z / n
+    center = (p + z * z / (2 * n)) / denom
+    margin = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom
+    return [round(max(0.0, center - margin) * 100.0, 2), round(min(1.0, center + margin) * 100.0, 2)]
 
 
 def to_num(value: object, default: float = 0.0) -> float:
@@ -270,7 +295,7 @@ def build_joined_warehouse_rows(
                 FROM {table}
                 ORDER BY timestamp
             ) AS {alias}
-            ON m1.timestamp >= {alias}.timestamp
+            ON m1.timestamp >= {alias}.timestamp + {TF_MS[tf]}
             """
         )
 
@@ -438,12 +463,12 @@ def cycle_metrics(conn: object, tf: str, ts: int, price: float) -> dict[str, flo
                 age_bars,
                 age_ms,
                 CASE
-                    WHEN last_kill_ts IS NOT NULL AND last_kill_ts <= ? THEN 'killed'
+                    WHEN last_kill_ts IS NOT NULL AND last_kill_ts + ? <= ? THEN 'killed'
                     ELSE 'open'
                 END AS eff_status
             FROM seeker_cycles
             WHERE timeframe = ?
-              AND origin_ts <= ?
+              AND origin_ts + ? <= ?
         )
         SELECT
             COALESCE(SUM(CASE WHEN eff_status = 'open' AND cycle_type = 'HS' AND zone_bottom <= ? AND zone_top >= ? THEN 1 ELSE 0 END), 0) AS inside_open_hs,
@@ -464,7 +489,7 @@ def cycle_metrics(conn: object, tf: str, ts: int, price: float) -> dict[str, flo
             COALESCE(MAX(CASE WHEN eff_status = 'killed' AND cycle_type = 'LS' AND zone_bottom <= ? AND zone_top >= ? THEN age_bars ELSE 0 END), 0) AS max_killed_ls_age_bars
         FROM active
         """,
-        [ts, tf, ts] + [price] * 28,
+        [TF_MS[tf], ts, tf, TF_MS[tf], ts] + [price] * 28,
     )
     if not row:
         return {}
@@ -504,13 +529,13 @@ def build_cycle_metric_cache_warehouse(
                     sc.div_count_total,
                     sc.age_bars,
                     CASE
-                        WHEN sc.last_kill_ts IS NOT NULL AND sc.last_kill_ts <= p.timestamp THEN 'killed'
+                        WHEN sc.last_kill_ts IS NOT NULL AND sc.last_kill_ts + {TF_MS[tf]} <= p.timestamp THEN 'killed'
                         ELSE 'open'
                     END AS eff_status
                 FROM {view_name} AS p
                 LEFT JOIN seeker_cycles AS sc
                   ON sc.timeframe = '{tf_sql}'
-                 AND sc.origin_ts <= p.timestamp
+                 AND sc.origin_ts + {TF_MS[tf]} <= p.timestamp
             )
             SELECT
                 timestamp,
@@ -1100,6 +1125,8 @@ def evaluate_trade_on_rows(
     target_model: str,
     horizon_bars: int = 90,
     fill_bars: int = 20,
+    fee_bps: float = 0.0,
+    slippage_bps: float = 0.0,
 ) -> dict[str, object]:
     bar_index = int(signal["bar_index"])
     direction = str(signal["direction"])
@@ -1215,6 +1242,24 @@ def evaluate_trade_on_rows(
     elif stop_hit_index is not None:
         result = "stopped"
 
+    # Round-trip costs (entry + exit) in R. timed_out is marked to market at
+    # the last close inside the horizon. A nominal winner that ends at or
+    # below 0 R after costs counts as a loss.
+    round_trip_cost_r = entry_price * (fee_bps + slippage_bps) * 2.0 / 10_000.0 / risk
+    if target_hit_index is not None:
+        net_r = target_r - round_trip_cost_r
+    elif stop_hit_index is not None:
+        net_r = -1.0 - round_trip_cost_r
+    else:
+        last_close = to_num(future[-1]["close"])
+        if direction == "long":
+            mtm_r = (last_close - entry_price) / risk
+        else:
+            mtm_r = (entry_price - last_close) / risk
+        net_r = mtm_r - round_trip_cost_r
+    if result in ("clean_run", "reclaimed_run") and net_r <= 0.0:
+        result = "stopped"
+
     flip_run_after_stop = False
     if stop_hit_index is not None:
         stop_row = future[stop_hit_index]
@@ -1239,6 +1284,7 @@ def evaluate_trade_on_rows(
         "risk_pct": risk / entry_price * 100.0,
         "mae_r": mae_r,
         "mfe_r": mfe_r,
+        "net_r": net_r,
         "flip_run_after_stop": flip_run_after_stop,
     }
 
@@ -1473,6 +1519,8 @@ def bucket_month(ts: int) -> str:
 def evaluate_transition_families(
     rows_1m: list[dict],
     transitions: list[dict[str, object]],
+    fee_bps: float = 0.0,
+    slippage_bps: float = 0.0,
 ) -> list[dict[str, object]]:
     buckets: dict[tuple[str, str], dict[str, object]] = {}
     for transition in transitions:
@@ -1497,6 +1545,7 @@ def evaluate_transition_families(
                             "timedOut": 0,
                             "flipRunsAfterStop": 0,
                             "sumRiskPct": 0.0,
+                            "sumNetR": 0.0,
                             "sumFirstScore": 0.0,
                             "sumSecondScore": 0.0,
                             "winsCount": 0,
@@ -1516,11 +1565,14 @@ def evaluate_transition_families(
                         entry_model=entry_model,
                         stop_model=stop_model,
                         target_model=target_model,
+                        fee_bps=fee_bps,
+                        slippage_bps=slippage_bps,
                     )
                     if not outcome.get("filled"):
                         continue
                     bucket["filled"] += 1
                     bucket["sumRiskPct"] += float(outcome.get("risk_pct") or 0.0)
+                    bucket["sumNetR"] += float(outcome.get("net_r") or 0.0)
                     result = str(outcome["result"])
                     if result in ("clean_run", "reclaimed_run"):
                         bucket["wins"] += 1
@@ -1546,6 +1598,7 @@ def evaluate_transition_families(
                             "time": str(second_signal.get("time") or ""),
                             "result": result,
                             "riskPct": round(float(outcome.get("risk_pct") or 0.0), 4),
+                            "netR": round(float(outcome.get("net_r") or 0.0), 4),
                             "flipAfterStop": bool(outcome.get("flip_run_after_stop")),
                             **{key: to_num(second_signal.get(key)) for key in TRANSITION_CONTEXT_KEYS},
                         }
@@ -1583,6 +1636,8 @@ def evaluate_transition_families(
                 "filled": filled,
                 "wins": wins,
                 "winRate": round(wins / filled * 100.0, 2),
+                "winRateCi95": wilson_ci95(wins, filled),
+                "avgNetR": round(float(bucket["sumNetR"]) / filled, 4),
                 "cleanRuns": int(bucket["cleanRuns"]),
                 "reclaimedRuns": int(bucket["reclaimedRuns"]),
                 "stopped": stopped,
@@ -1649,6 +1704,8 @@ def summarize_transition_families(
                 "filled": item["filled"],
                 "wins": item["wins"],
                 "winRate": item["winRate"],
+                "winRateCi95": item.get("winRateCi95"),
+                "avgNetR": item.get("avgNetR"),
                 "cleanRuns": item["cleanRuns"],
                 "reclaimedRuns": item["reclaimedRuns"],
                 "stopped": item["stopped"],
@@ -1701,6 +1758,7 @@ def summarize_transition_context_edges(
 
 def summarize_reclaim_threshold_sweeps(
     transition_families: list[dict[str, object]],
+    train_until_ts: int | None = None,
 ) -> list[dict[str, object]]:
     target_families = {
         "fakeout_to_reclaim:short->long": "reclaim_quality_long",
@@ -1715,6 +1773,8 @@ def summarize_reclaim_threshold_sweeps(
         if not item:
             continue
         records = list(item.get("records") or [])
+        if train_until_ts is not None:
+            records = [record for record in records if int(record["timestamp"]) <= train_until_ts]
         if len(records) < 4:
             continue
         baseline_filled = len(records)
@@ -1758,6 +1818,7 @@ def summarize_reclaim_threshold_sweeps(
                     "filled": filled,
                     "wins": wins,
                     "winRate": round(win_rate, 2),
+                    "winRateCi95": wilson_ci95(wins, filled),
                     "deltaVsBaseline": round(win_rate - baseline_rate, 2),
                 }
                 if best is None:
@@ -1778,6 +1839,7 @@ def summarize_reclaim_threshold_sweeps(
                 "baselineFilled": baseline_filled,
                 "baselineWins": baseline_wins,
                 "baselineWinRate": baseline_rate,
+                "baselineWinRateCi95": wilson_ci95(baseline_wins, baseline_filled),
                 "sweeps": sweeps[:6],
             }
         )
@@ -1787,6 +1849,7 @@ def summarize_reclaim_threshold_sweeps(
 
 def summarize_robust_transition_gates(
     transition_families: list[dict[str, object]],
+    train_until_ts: int | None = None,
 ) -> list[dict[str, object]]:
     target_families = (
         "fakeout_to_reclaim:short->long",
@@ -1801,6 +1864,8 @@ def summarize_robust_transition_gates(
         if not item:
             continue
         records = list(item.get("records") or [])
+        if train_until_ts is not None:
+            records = [record for record in records if int(record["timestamp"]) <= train_until_ts]
         if len(records) < 16:
             continue
 
@@ -1879,7 +1944,9 @@ def summarize_robust_transition_gates(
                         "meanUplift": round(mean_uplift, 2),
                         "positiveShare": round(positive_share * 100.0, 2),
                         "baselineWinRate": round(baseline_win_rate, 2),
+                        "baselineWinRateCi95": wilson_ci95(baseline_total_wins, baseline_total_filled),
                         "gatedWinRate": round(overall_win_rate, 2),
+                        "gatedWinRateCi95": wilson_ci95(total_kept_wins, total_kept),
                         "keepRate": round(keep_rate, 2),
                         "evaluatedBuckets": len(per_bucket),
                     }
@@ -2094,7 +2161,6 @@ def choose_best_setup_from_train(
 
 def summarize_walk_forward_validation(
     transition_leaderboard: list[dict[str, object]],
-    robust_transition_gates: list[dict[str, object]],
 ) -> list[dict[str, object]]:
     target_families = (
         "fakeout_to_reclaim:short->long",
@@ -2107,11 +2173,6 @@ def summarize_walk_forward_validation(
         full_records_by_family[str(item["transitionType"])].extend(item.get("records") or [])
 
     summaries: list[dict[str, object]] = []
-    family_gate_metrics: dict[str, list[tuple[str, str]]] = {}
-    for item in robust_transition_gates:
-        family_gate_metrics[str(item["transitionType"])] = [
-            (str(gate["metric"]), str(gate["mode"])) for gate in (item.get("bestGates") or [])[:4]
-        ]
     for family in target_families:
         all_records = sorted(full_records_by_family.get(family) or [], key=lambda record: int(record["timestamp"]))
         if not all_records:
@@ -2129,10 +2190,15 @@ def summarize_walk_forward_validation(
             chosen_setup = choose_best_setup_from_train(transition_leaderboard, family, train_bucket_keys)
             if not chosen_setup:
                 continue
+            # Gate metric shortlist must come from train records only — using the
+            # full-sample robust gates here would leak OOS information.
+            train_records = list(chosen_setup["records"])
+            train_gates = summarize_robust_gates_for_records(family, train_records)
+            metric_candidates = [(str(gate["metric"]), str(gate["mode"])) for gate in train_gates[:4]] or None
             profile = choose_transition_profile(
                 family,
-                list(chosen_setup["records"]),
-                metric_candidates=family_gate_metrics.get(family),
+                train_records,
+                metric_candidates=metric_candidates,
             )
             if not profile:
                 continue
@@ -2160,6 +2226,8 @@ def summarize_walk_forward_validation(
                 continue
             kept_wins = sum(1 for record in kept_records if record["result"] in ("clean_run", "reclaimed_run"))
             kept_rate = kept_wins / max(1, len(kept_records)) * 100.0
+            baseline_net_r = sum(float(record.get("netR") or 0.0) for record in test_records) / max(1, len(test_records))
+            gated_net_r = sum(float(record.get("netR") or 0.0) for record in kept_records) / max(1, len(kept_records))
             train_setup_names[str(chosen_setup["setup"])] += 1
             train_profiles.append(profile)
             bucket_results.append(
@@ -2169,9 +2237,13 @@ def summarize_walk_forward_validation(
                     "baselineFilled": len(test_records),
                     "baselineWins": baseline_wins,
                     "baselineWinRate": round(baseline_rate, 2),
+                    "baselineWinRateCi95": wilson_ci95(baseline_wins, len(test_records)),
+                    "baselineAvgNetR": round(baseline_net_r, 4),
                     "gatedFilled": len(kept_records),
                     "gatedWins": kept_wins,
                     "gatedWinRate": round(kept_rate, 2),
+                    "gatedWinRateCi95": wilson_ci95(kept_wins, len(kept_records)),
+                    "gatedAvgNetR": round(gated_net_r, 4),
                     "uplift": round(kept_rate - baseline_rate, 2),
                     "keepRate": round(len(kept_records) / max(1, len(test_records)) * 100.0, 2),
                     "profile": profile,
@@ -2191,9 +2263,17 @@ def summarize_walk_forward_validation(
                 "baselineFilled": baseline_filled,
                 "baselineWins": baseline_wins,
                 "baselineWinRate": round(baseline_wins / max(1, baseline_filled) * 100.0, 2),
+                "baselineWinRateCi95": wilson_ci95(baseline_wins, baseline_filled),
                 "gatedFilled": gated_filled,
                 "gatedWins": gated_wins,
                 "gatedWinRate": round(gated_wins / max(1, gated_filled) * 100.0, 2),
+                "gatedWinRateCi95": wilson_ci95(gated_wins, gated_filled),
+                "avgBaselineNetR": round(
+                    sum(float(item["baselineAvgNetR"]) for item in bucket_results) / len(bucket_results), 4
+                ),
+                "avgGatedNetR": round(
+                    sum(float(item["gatedAvgNetR"]) for item in bucket_results) / len(bucket_results), 4
+                ),
                 "avgUplift": round(sum(item["uplift"] for item in bucket_results) / len(bucket_results), 2),
                 "positiveBuckets": positive_buckets,
                 "positiveBucketShare": round(positive_buckets / len(bucket_results) * 100.0, 2),
@@ -2291,6 +2371,9 @@ def run_research(
     since_ts: int | None = None,
     until_ts: int | None = None,
     use_warehouse: bool = False,
+    fee_bps: float = 5.0,
+    slippage_bps: float = 5.0,
+    train_fraction: float = 0.65,
 ) -> dict[str, object]:
     conn = connect_research_backend(db_path, use_warehouse=use_warehouse)
     thresholds = {}
@@ -2324,9 +2407,24 @@ def run_research(
         tf: load_timeframe_rows(conn, tf, since_ts=since_ts, until_ts=until_ts, columns=THRESHOLD_COLUMNS)
         for tf in RESEARCH_TFS
     }
-    thresholds["1m"] = build_thresholds(threshold_rows["1m"])
+    # Percentile thresholds are estimated on the train prefix only and then
+    # frozen, so scores in the later OOS region use no future information.
+    train_cutoff_ts: int | None = None
+    if rows_1m:
+        train_fraction = min(1.0, max(0.0, train_fraction))
+        cutoff_index = min(len(rows_1m) - 1, int(len(rows_1m) * train_fraction))
+        train_cutoff_ts = int(rows_1m[cutoff_index]["timestamp"])
+    train_threshold_rows = {
+        tf: [
+            row
+            for row in threshold_rows[tf]
+            if train_cutoff_ts is None or int(row["timestamp"]) <= train_cutoff_ts
+        ]
+        for tf in RESEARCH_TFS
+    }
+    thresholds["1m"] = build_thresholds(train_threshold_rows["1m"])
     for tf in HIGHER_TFS:
-        thresholds[tf] = build_thresholds(threshold_rows[tf])
+        thresholds[tf] = build_thresholds(train_threshold_rows[tf])
 
     if use_warehouse or db_path.endswith(".duckdb"):
         cycle_rows = {
@@ -2346,7 +2444,7 @@ def run_research(
     snapshot_score_cache = build_snapshot_score_cache({"1m": rows_1m, **higher_rows}, thresholds)
     volume_score_cache = build_volume_breaker_score_cache({"1m": rows_1m, **higher_rows})
 
-    cursors = {tf: TfCursor(rows=rows) for tf, rows in higher_rows.items()} if not (use_warehouse or db_path.endswith(".duckdb")) else None
+    cursors = {tf: TfCursor(rows=rows, tf_ms=TF_MS[tf]) for tf, rows in higher_rows.items()} if not (use_warehouse or db_path.endswith(".duckdb")) else None
 
     recent_bull: collections.deque[float] = collections.deque(maxlen=30)
     recent_bear: collections.deque[float] = collections.deque(maxlen=30)
@@ -2467,6 +2565,7 @@ def run_research(
                             "timed_out": 0,
                             "flip_runs_after_stop": 0,
                             "sum_risk_pct": 0.0,
+                            "sum_net_r": 0.0,
                             "sum_score": 0.0,
                             "sample": [],
                         },
@@ -2479,11 +2578,14 @@ def run_research(
                         entry_model=entry_model,
                         stop_model=stop_model,
                         target_model=target_model,
+                        fee_bps=fee_bps,
+                        slippage_bps=slippage_bps,
                     )
                     if not outcome.get("filled"):
                         continue
                     bucket["filled"] += 1
                     bucket["sum_risk_pct"] += float(outcome.get("risk_pct") or 0.0)
+                    bucket["sum_net_r"] += float(outcome.get("net_r") or 0.0)
                     result = str(outcome["result"])
                     if result in ("clean_run", "reclaimed_run"):
                         bucket["wins"] += 1
@@ -2692,6 +2794,8 @@ def run_research(
                     "filled": filled,
                     "wins": wins,
                     "win_rate": round(win_rate * 100.0, 2),
+                    "win_rate_ci95": wilson_ci95(wins, filled),
+                    "avg_net_r": round(float(bucket["sum_net_r"]) / filled, 4),
                     "clean_runs": clean,
                     "reclaimed_runs": reclaimed,
                     "reclaimed_share": round(reclaimed_share * 100.0, 2),
@@ -2718,13 +2822,19 @@ def run_research(
     all_transitions = mine_signal_transitions(list(best_signals.values()))
     today_transition_list = mine_signal_transitions(list(today_signals.values()))
     transition_counts = collections.Counter(item["type"] for item in all_transitions)
-    transition_leaderboard_full = evaluate_transition_families(rows_1m, all_transitions)
+    transition_leaderboard_full = evaluate_transition_families(
+        rows_1m, all_transitions, fee_bps=fee_bps, slippage_bps=slippage_bps
+    )
     transition_family_summary = summarize_transition_families(transition_leaderboard_full)
     transition_context_edges = summarize_transition_context_edges(transition_family_summary)
-    reclaim_threshold_sweeps = summarize_reclaim_threshold_sweeps(transition_family_summary)
-    robust_transition_gates = summarize_robust_transition_gates(transition_family_summary)
+    reclaim_threshold_sweeps = summarize_reclaim_threshold_sweeps(
+        transition_family_summary, train_until_ts=train_cutoff_ts
+    )
+    robust_transition_gates = summarize_robust_transition_gates(
+        transition_family_summary, train_until_ts=train_cutoff_ts
+    )
     transition_gate_profiles = build_transition_gate_profiles(robust_transition_gates)
-    walk_forward_transitions = summarize_walk_forward_validation(transition_leaderboard_full, robust_transition_gates)
+    walk_forward_transitions = summarize_walk_forward_validation(transition_leaderboard_full)
     gated_transitions = [
         item
         for item in all_transitions
@@ -2732,7 +2842,9 @@ def run_research(
     ]
     gated_transition_counts = collections.Counter(item["type"] for item in gated_transitions)
     gated_transition_keep_rates = summarize_transition_gate_keep_rates(all_transitions, gated_transitions)
-    gated_transition_leaderboard_full = evaluate_transition_families(rows_1m, gated_transitions)
+    gated_transition_leaderboard_full = evaluate_transition_families(
+        rows_1m, gated_transitions, fee_bps=fee_bps, slippage_bps=slippage_bps
+    )
     gated_transition_family_summary = summarize_transition_families(gated_transition_leaderboard_full)
     transition_leaderboard_public = [
         {key: value for key, value in item.items() if key != "records"} for item in transition_leaderboard_full[:24]
@@ -2760,6 +2872,10 @@ def run_research(
         "candidateCount": len(candidates),
         "signalThreshold": signal_threshold,
         "cooldownBars": cooldown_bars,
+        "feeBps": fee_bps,
+        "slippageBps": slippage_bps,
+        "trainFraction": train_fraction,
+        "trainCutoffTs": train_cutoff_ts,
         "familySignalCounts": dict(sorted(family_signal_counts.items())),
         "transitionCounts": dict(sorted(transition_counts.items())),
         "leaderboard": leaderboard[:18],
@@ -2792,6 +2908,8 @@ def markdown_report(report: dict[str, object]) -> str:
         f"- candidate signals: `{report['candidateCount']}`",
         f"- signal threshold: `{report['signalThreshold']}`",
         f"- cooldown bars: `{report['cooldownBars']}`",
+        f"- costs: `{report['feeBps']}` bps fee + `{report['slippageBps']}` bps slippage per side",
+        f"- train fraction: `{report['trainFraction']}` (cutoff ts `{report['trainCutoffTs']}`)",
         "",
     ]
     lines.extend(["## Signal Families", ""])
@@ -2829,7 +2947,8 @@ def markdown_report(report: dict[str, object]) -> str:
             [
                 f"### {item['family_direction']} · {item['setup']}",
                 f"- filled: `{item['filled']}`",
-                f"- win rate: `{item['win_rate']}%`",
+                f"- win rate: `{item['win_rate']}%` (95% CI `{item['win_rate_ci95'][0]}`-`{item['win_rate_ci95'][1]}`)",
+                f"- avg net R: `{item['avg_net_r']}`",
                 f"- clean runs: `{item['clean_runs']}`",
                 f"- reclaimed runs: `{item['reclaimed_runs']}` (`{item['reclaimed_share']}%` der Gewinner)",
                 f"- stopped: `{item['stopped']}`",
@@ -2846,7 +2965,8 @@ def markdown_report(report: dict[str, object]) -> str:
                 [
                     f"### {item['transitionType']} · {item['setup']}",
                     f"- filled: `{item['filled']}` / `{item['count']}`",
-                    f"- win rate: `{item['winRate']}%`",
+                    f"- win rate: `{item['winRate']}%` (95% CI `{item['winRateCi95'][0]}`-`{item['winRateCi95'][1]}`)",
+                    f"- avg net R: `{item['avgNetR']}`",
                     f"- clean runs: `{item['cleanRuns']}`",
                     f"- reclaimed runs: `{item['reclaimedRuns']}`",
                     f"- stopped: `{item['stopped']}`",
@@ -2865,7 +2985,8 @@ def markdown_report(report: dict[str, object]) -> str:
                     f"### {item['transitionType']}",
                     f"- best setup: `{item['bestSetup']}`",
                     f"- filled: `{item['filled']}`",
-                    f"- win rate: `{item['winRate']}%`",
+                    f"- win rate: `{item['winRate']}%` (95% CI `{item['winRateCi95'][0]}`-`{item['winRateCi95'][1]}`)",
+                    f"- avg net R: `{item['avgNetR']}`",
                     f"- clean runs: `{item['cleanRuns']}`",
                     f"- reclaimed runs: `{item['reclaimedRuns']}`",
                     f"- stopped: `{item['stopped']}`",
@@ -2932,8 +3053,8 @@ def markdown_report(report: dict[str, object]) -> str:
                 [
                     f"### {item['transitionType']}",
                     f"- buckets evaluated: `{item['bucketsEvaluated']}`",
-                    f"- baseline: `{item['baselineWins']}/{item['baselineFilled']}` · `{item['baselineWinRate']}%`",
-                    f"- gated: `{item['gatedWins']}/{item['gatedFilled']}` · `{item['gatedWinRate']}%`",
+                    f"- baseline: `{item['baselineWins']}/{item['baselineFilled']}` · `{item['baselineWinRate']}%` (95% CI `{item['baselineWinRateCi95'][0]}`-`{item['baselineWinRateCi95'][1]}`) · avg net R `{item['avgBaselineNetR']}`",
+                    f"- gated: `{item['gatedWins']}/{item['gatedFilled']}` · `{item['gatedWinRate']}%` (95% CI `{item['gatedWinRateCi95'][0]}`-`{item['gatedWinRateCi95'][1]}`) · avg net R `{item['avgGatedNetR']}`",
                     f"- avg uplift: `{item['avgUplift']:+.2f}pp`",
                     f"- positive buckets: `{item['positiveBuckets']}` / `{item['bucketsEvaluated']}` (`{item['positiveBucketShare']}%`)",
                     f"- avg keep rate: `{item['avgKeepRate']}%`",
@@ -2968,7 +3089,8 @@ def markdown_report(report: dict[str, object]) -> str:
                     f"### {item['transitionType']}",
                     f"- best setup: `{item['bestSetup']}`",
                     f"- filled: `{item['filled']}`",
-                    f"- win rate: `{item['winRate']}%`",
+                    f"- win rate: `{item['winRate']}%` (95% CI `{item['winRateCi95'][0]}`-`{item['winRateCi95'][1]}`)",
+                    f"- avg net R: `{item['avgNetR']}`",
                     f"- clean runs: `{item['cleanRuns']}`",
                     f"- reclaimed runs: `{item['reclaimedRuns']}`",
                     f"- stopped: `{item['stopped']}`",
@@ -2996,6 +3118,25 @@ def main() -> None:
     parser.add_argument("--cooldown-bars", type=int, default=10)
     parser.add_argument("--since-ts", type=int)
     parser.add_argument("--until-ts", type=int)
+    parser.add_argument(
+        "--fee-bps",
+        type=float,
+        default=5.0,
+        help="taker fee per side in basis points, charged on entry and exit (default: 5.0)",
+    )
+    parser.add_argument(
+        "--slippage-bps",
+        type=float,
+        default=5.0,
+        help="slippage per side in basis points, charged on entry and exit (default: 5.0)",
+    )
+    parser.add_argument(
+        "--train-fraction",
+        type=float,
+        default=0.65,
+        help="fraction of 1m bars used as train prefix for percentile thresholds "
+        "and gate/sweep estimation; later bars are scored with frozen thresholds (default: 0.65)",
+    )
     parser.add_argument("--json-out")
     parser.add_argument("--md-out")
     args = parser.parse_args()
@@ -3007,6 +3148,9 @@ def main() -> None:
         since_ts=args.since_ts,
         until_ts=args.until_ts,
         use_warehouse=args.warehouse,
+        fee_bps=args.fee_bps,
+        slippage_bps=args.slippage_bps,
+        train_fraction=args.train_fraction,
     )
 
     if args.json_out:
