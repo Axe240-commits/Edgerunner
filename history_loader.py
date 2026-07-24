@@ -24,6 +24,7 @@ from db import (init_db, insert_candles, count_candles, get_ts_range,
                 DEFAULT_DB_PATH, TIMEFRAMES)
 from hyperliquid_api import (fetch_candles as hl_fetch, fetch_binance_volume,
                              fetch_binance_futures_volume,
+                             fetch_binance_futures_candles,
                              merge_binance_volume, INTERVAL_MS)
 
 HL_MAX_PER_REQUEST = 500
@@ -56,11 +57,16 @@ def _fetch_binance_delta_batch(interval, start_ms, end_ms, limit=1000):
 
 def load_history(coin='BTC', start_date=None, end_date=None,
                  days=None, timeframes=None, db_path=DEFAULT_DB_PATH,
-                 fill_gaps=False):
+                 fill_gaps=False, source='hyperliquid'):
     """Load historical candles from Hyperliquid + Binance delta.
 
-    OHLCV: Hyperliquid (matches your trading charts)
-    Volume+Delta: Binance BTCUSDT Spot (real taker buy/sell data)
+    source='hyperliquid':     OHLCV from Hyperliquid (matches your trading
+                              charts), volume+delta merged from Binance
+                              spot/futures (real taker buy/sell data).
+    source='binance-futures': OHLCV + native futures volume/delta from Binance
+                              Futures BTCUSDT perp (full history, unlike the
+                              HL candleSnapshot for small TFs). The Binance
+                              spot merge (spot_volume/spot_delta) is kept.
     """
     init_db(db_path)
 
@@ -68,11 +74,19 @@ def load_history(coin='BTC', start_date=None, end_date=None,
         timeframes = list(TIMEFRAMES)
 
     now_ms = int(time.time() * 1000)
+    # Candles per OHLCV request: HL caps at 500, Binance at 1000.
+    per_request = (BINANCE_MAX_PER_REQUEST if source == 'binance-futures'
+                   else HL_MAX_PER_REQUEST)
 
     print(f'\n  Edgerunner History Loader')
     print(f'  {"─" * 40}')
-    print(f'  OHLCV:      Hyperliquid ({coin})')
-    print(f'  Vol/Delta:  Binance (BTCUSDT Spot)')
+    print(f'  Source:     {source}')
+    if source == 'binance-futures':
+        print(f'  OHLCV:      Binance Futures (BTCUSDT perp)')
+        print(f'  Vol/Delta:  native futures taker delta + Binance Spot merge')
+    else:
+        print(f'  OHLCV:      Hyperliquid ({coin})')
+        print(f'  Vol/Delta:  Binance (BTCUSDT Spot)')
     print(f'  Timeframes: {", ".join(timeframes)}')
     print(f'  DB:         {db_path}')
     print()
@@ -103,9 +117,9 @@ def load_history(coin='BTC', start_date=None, end_date=None,
 
         start_ms = max(start_ms, HL_BTC_START_MS)
         total_candles = (end_ms - start_ms) // ims
-        hl_requests = max(1, (total_candles + HL_MAX_PER_REQUEST - 1) // HL_MAX_PER_REQUEST)
+        n_requests = max(1, (total_candles + per_request - 1) // per_request)
 
-        print(f'  [{tf:>3s}] {_ms_to_date(start_ms)} -> {_ms_to_date(end_ms)}  (~{total_candles:,} candles, ~{hl_requests} HL req)')
+        print(f'  [{tf:>3s}] {_ms_to_date(start_ms)} -> {_ms_to_date(end_ms)}  (~{total_candles:,} candles, ~{n_requests} {source} req)')
 
         lookback = TF_LOOKBACK.get(tf, 2)
         analyzer = CandleAnalyzer(swing_lookback=lookback)
@@ -119,35 +133,54 @@ def load_history(coin='BTC', start_date=None, end_date=None,
 
         while current_ms < end_ms:
             try:
-                # 1) Fetch OHLCV from Hyperliquid
-                #    HL returns the LAST N candles in a window, so we cap
-                #    the end to a sliding window of max 500 candles.
-                batch_end = min(end_ms, current_ms + HL_MAX_PER_REQUEST * ims)
-                candles = _fetch_hl_batch(coin, tf, current_ms, batch_end,
-                                          HL_MAX_PER_REQUEST)
+                # 1) Fetch OHLCV from the chosen source.
+                #    HL returns the LAST N candles in a window, so the end is
+                #    capped to a sliding window of max N candles either way.
+                batch_end = min(end_ms, current_ms + per_request * ims)
+                if source == 'binance-futures':
+                    candles = fetch_binance_futures_candles(
+                        tf, start_ms=current_ms, end_ms=batch_end,
+                        limit=per_request)
+                else:
+                    candles = _fetch_hl_batch(coin, tf, current_ms, batch_end,
+                                              HL_MAX_PER_REQUEST)
                 if not candles:
                     break
 
-                # 2) Fetch Binance volume+delta for same range and merge
+                # 2) Fetch Binance SPOT volume+delta for same range and merge
                 bv = _fetch_binance_delta_batch(
                     tf,
                     start_ms=candles[0]['timestamp'],
                     end_ms=candles[-1]['timestamp'] + ims,
                     limit=BINANCE_MAX_PER_REQUEST,
                 )
-                fv = {}
-                try:
-                    fv = fetch_binance_futures_volume(
-                        tf,
-                        start_ms=candles[0]['timestamp'],
-                        end_ms=candles[-1]['timestamp'] + ims,
-                        limit=BINANCE_MAX_PER_REQUEST,
-                    )
-                except Exception:
-                    fv = {}
 
-                if bv or fv:
-                    merge_binance_volume(candles, bv, fv)
+                if source == 'binance-futures':
+                    # Futures volume/delta is already native on the candles;
+                    # merge spot manually. merge_binance_volume would
+                    # overwrite the legacy volume/delta fields with spot data.
+                    if bv:
+                        for c in candles:
+                            sv = bv.get(c['timestamp'])
+                            if sv:
+                                c['spot_volume'] = sv['volume']
+                                c['spot_delta'] = sv['delta']
+                                c['futures_minus_spot_volume'] = c['volume'] - sv['volume']
+                                c['futures_minus_spot_delta'] = c['delta'] - sv['delta']
+                else:
+                    fv = {}
+                    try:
+                        fv = fetch_binance_futures_volume(
+                            tf,
+                            start_ms=candles[0]['timestamp'],
+                            end_ms=candles[-1]['timestamp'] + ims,
+                            limit=BINANCE_MAX_PER_REQUEST,
+                        )
+                    except Exception:
+                        fv = {}
+
+                    if bv or fv:
+                        merge_binance_volume(candles, bv, fv)
 
                 raw_buffer.extend(candles)
                 total_loaded += len(candles)
@@ -199,6 +232,8 @@ def load_history(coin='BTC', start_date=None, end_date=None,
 
         elapsed = time.time() - t_start
         n_db = count_candles(tf=tf, path=db_path)
+        if total_loaded == 0:
+            print(f'\n  [{tf:>3s}] WARNING: 0 candles loaded — source has no data for this range')
         print(f'\n  [{tf:>3s}] Done: {total_loaded:,} loaded in {elapsed:.1f}s, DB total: {n_db:,}')
         print()
 
@@ -357,6 +392,11 @@ if __name__ == '__main__':
     parser.add_argument('--tf', nargs='*', default=None,
                         help='Timeframes to load (default: all). E.g. --tf 1m 5m 15m')
     parser.add_argument('--db', default=DEFAULT_DB_PATH, help='Database path')
+    parser.add_argument('--source', choices=['hyperliquid', 'binance-futures'],
+                        default='hyperliquid',
+                        help='OHLCV source (default: hyperliquid). '
+                             'binance-futures: full history + native futures '
+                             'volume/delta from Binance Futures BTCUSDT perp')
     parser.add_argument('--fill-gaps', action='store_true', help='Fill gaps in existing data')
     parser.add_argument('--enrich-whales', action='store_true', help='Enrich whale features')
     args = parser.parse_args()
@@ -372,4 +412,5 @@ if __name__ == '__main__':
             timeframes=args.tf,
             db_path=args.db,
             fill_gaps=args.fill_gaps,
+            source=args.source,
         )

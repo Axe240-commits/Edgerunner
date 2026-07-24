@@ -10,6 +10,7 @@ Limits: 500 candles/request, max 5000 candles history, 1200 weight/min.
 """
 import json
 import time
+import urllib.error
 import urllib.request
 
 TIMEFRAMES = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d', '1w', '1M']
@@ -54,6 +55,7 @@ def _aggregate_ohlcv(candles, target_interval):
                 'spot_volume', 'spot_delta',
                 'futures_volume', 'futures_delta',
                 'futures_minus_spot_volume', 'futures_minus_spot_delta',
+                'num_trades',
             ):
                 if key in candle:
                     bucket[key] = float(candle.get(key) or 0)
@@ -70,6 +72,7 @@ def _aggregate_ohlcv(candles, target_interval):
             'spot_volume', 'spot_delta',
             'futures_volume', 'futures_delta',
             'futures_minus_spot_volume', 'futures_minus_spot_delta',
+            'num_trades',
         ):
             if key in candle:
                 bucket[key] = float(bucket.get(key) or 0) + float(candle.get(key) or 0)
@@ -335,6 +338,106 @@ def fetch_binance_futures_volume(interval='1m', start_ms=None, end_ms=None, limi
             'num_trades': int(k[8]),
         }
     return result
+
+
+def _binance_get_json(url, retries=4):
+    """GET a Binance endpoint with timeout + backoff on 429/5xx and network errors."""
+    last_err = None
+    for attempt in range(retries):
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'Edgerunner/1.0'})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            last_err = e
+            if e.code == 429 or e.code >= 500:
+                time.sleep(1.0 * (attempt + 1))
+                continue
+            raise
+        except urllib.error.URLError as e:
+            last_err = e
+            time.sleep(1.0 * (attempt + 1))
+    raise RuntimeError(f'Binance request failed after {retries} attempts: {last_err}')
+
+
+def fetch_binance_futures_candles(interval='1m', start_ms=None, end_ms=None, limit=1000):
+    """Fetch Binance FUTURES BTCUSDT perpetual klines as full candle dicts.
+
+    Same shape as fetch_candles (timestamp = open time ms, OHLC float,
+    volume = BTC base volume from k[5]), plus:
+      delta           = 2*taker_buy - volume  (real taker delta, k[9])
+      futures_volume  = volume   (native futures data, no separate merge needed)
+      futures_delta   = delta
+      num_trades      = k[8]
+
+    Non-native intervals (in this repo: 10m) are aggregated from the next
+    smaller native interval via _aggregate_ohlcv (10m from 5m), paginating
+    the base interval internally (Binance caps at 1000 klines/request).
+    """
+    if interval in AGGREGATED_TIMEFRAMES:
+        base_interval, _ratio = AGGREGATED_TIMEFRAMES[interval]
+        base_ims = INTERVAL_MS[base_interval]
+        now_ms = int(time.time() * 1000)
+        if end_ms is None:
+            end_ms = now_ms
+        if start_ms is None:
+            start_ms = end_ms - (limit * INTERVAL_MS[interval])
+
+        # Paginate base candles over the full window (max 1000 per request)
+        base_candles = []
+        seen = set()
+        cursor = start_ms
+        while cursor < end_ms:
+            batch = fetch_binance_futures_candles(
+                interval=base_interval, start_ms=cursor, end_ms=end_ms,
+                limit=1000)
+            new = [c for c in batch if c['timestamp'] not in seen]
+            if not new:
+                break
+            seen.update(c['timestamp'] for c in new)
+            base_candles.extend(new)
+            cursor = new[-1]['timestamp'] + base_ims
+            time.sleep(0.05)
+
+        aggregated = _aggregate_ohlcv(base_candles, interval)
+        aggregated = [c for c in aggregated
+                      if start_ms <= c['timestamp'] < end_ms]
+        return aggregated[-limit:]
+
+    now_ms = int(time.time() * 1000)
+    if end_ms is None:
+        end_ms = now_ms
+    if start_ms is None:
+        ims = INTERVAL_MS.get(interval, 60_000)
+        start_ms = end_ms - (limit * ims)
+
+    bi = BINANCE_INTERVAL.get(interval)
+    if not bi:
+        return []
+
+    params = (f'symbol=BTCUSDT&interval={bi}&startTime={start_ms}'
+              f'&endTime={end_ms}&limit={min(limit, 1000)}')
+    raw = _binance_get_json(f'{BINANCE_FUTURES_KLINES_URL}?{params}')
+
+    candles = []
+    for k in raw:
+        vol = float(k[5])
+        taker_buy = float(k[9])
+        delta = 2.0 * taker_buy - vol  # taker_buy - taker_sell
+        candles.append({
+            'timestamp': int(k[0]),
+            'open': float(k[1]),
+            'high': float(k[2]),
+            'low': float(k[3]),
+            'close': float(k[4]),
+            'volume': vol,
+            'delta': delta,
+            'futures_volume': vol,
+            'futures_delta': delta,
+            'num_trades': int(k[8]),
+        })
+    candles.sort(key=lambda c: c['timestamp'])
+    return candles[-limit:]
 
 
 def merge_binance_volume(candles, spot_vol, futures_vol=None):
