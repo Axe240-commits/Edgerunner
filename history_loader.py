@@ -30,9 +30,16 @@ from hyperliquid_api import (fetch_candles as hl_fetch, fetch_binance_volume,
 HL_MAX_PER_REQUEST = 500
 BINANCE_MAX_PER_REQUEST = 1000
 RATE_LIMIT_DELAY = 0.08
+# Abort a timeframe after this many consecutive errors at the same cursor.
+MAX_CONSECUTIVE_ERRORS = 5
 
 # Hyperliquid BTC perps started ~2023-04
 HL_BTC_START_MS = 1680307200000
+
+# Binance BTCUSDT perpetual started 2019-09-08 — verified live against
+# fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1d&startTime=0,
+# earliest kline open time = 1567900800000 (2019-09-08 00:00:00 UTC).
+BINANCE_FUTURES_BTC_START_MS = 1567900800000
 
 # Swing lookback per TF (smaller TFs need more lookback)
 TF_LOOKBACK = {
@@ -47,12 +54,16 @@ def _fetch_hl_batch(coin, interval, start_ms, end_ms, limit=500):
 
 
 def _fetch_binance_delta_batch(interval, start_ms, end_ms, limit=1000):
-    """Fetch Binance volume+delta for a time range. Returns ts->data map."""
+    """Fetch Binance volume+delta for a time range.
+
+    Returns (ts->data map, error-or-None). Errors are returned instead of
+    being silently swallowed, so the caller can warn about spot-merge gaps.
+    """
     try:
         return fetch_binance_volume(interval, start_ms=start_ms, end_ms=end_ms,
-                                    limit=limit)
-    except Exception:
-        return {}
+                                    limit=limit), None
+    except Exception as e:
+        return {}, e
 
 
 def load_history(coin='BTC', start_date=None, end_date=None,
@@ -77,6 +88,13 @@ def load_history(coin='BTC', start_date=None, end_date=None,
     # Candles per OHLCV request: HL caps at 500, Binance at 1000.
     per_request = (BINANCE_MAX_PER_REQUEST if source == 'binance-futures'
                    else HL_MAX_PER_REQUEST)
+    # History floor is source-specific: HL perps started 2023-04, the
+    # Binance BTCUSDT perp already in 2019-09.
+    source_start_floor = (BINANCE_FUTURES_BTC_START_MS
+                          if source == 'binance-futures' else HL_BTC_START_MS)
+
+    ok_tfs = []
+    failed_tfs = []
 
     print(f'\n  Edgerunner History Loader')
     print(f'  {"─" * 40}')
@@ -115,7 +133,7 @@ def load_history(coin='BTC', start_date=None, end_date=None,
             print('  Specify --start, --days, or --fill-gaps')
             return
 
-        start_ms = max(start_ms, HL_BTC_START_MS)
+        start_ms = max(start_ms, source_start_floor)
         total_candles = (end_ms - start_ms) // ims
         n_requests = max(1, (total_candles + per_request - 1) // per_request)
 
@@ -130,6 +148,10 @@ def load_history(coin='BTC', start_date=None, end_date=None,
         batch_size = 5000  # analyze+store every N candles
         raw_buffer = []
         t_start = time.time()
+        consecutive_errors = 0
+        last_error_cursor = None
+        tf_failed = False
+        spot_missing_windows = 0
 
         while current_ms < end_ms:
             try:
@@ -147,13 +169,20 @@ def load_history(coin='BTC', start_date=None, end_date=None,
                 if not candles:
                     break
 
-                # 2) Fetch Binance SPOT volume+delta for same range and merge
-                bv = _fetch_binance_delta_batch(
+                # 2) Fetch Binance SPOT volume+delta for same range and merge.
+                #    Failures leave a spot gap — warn throttled, count for the
+                #    TF-end summary instead of swallowing silently.
+                bv, spot_err = _fetch_binance_delta_batch(
                     tf,
                     start_ms=candles[0]['timestamp'],
                     end_ms=candles[-1]['timestamp'] + ims,
                     limit=BINANCE_MAX_PER_REQUEST,
                 )
+                if spot_err is not None:
+                    spot_missing_windows += 1
+                    if spot_missing_windows <= 3:
+                        print(f'\n  [{tf}] WARNING: spot-merge failed for '
+                              f'window at {_ms_to_date(current_ms)}: {spot_err}')
 
                 if source == 'binance-futures':
                     # Futures volume/delta is already native on the candles;
@@ -187,6 +216,7 @@ def load_history(coin='BTC', start_date=None, end_date=None,
 
                 # Move cursor past last candle
                 current_ms = candles[-1]['timestamp'] + ims
+                consecutive_errors = 0  # progress made — reset error streak
 
                 # Analyze and store when buffer is large enough
                 if len(raw_buffer) >= batch_size or current_ms >= end_ms:
@@ -226,16 +256,41 @@ def load_history(coin='BTC', start_date=None, end_date=None,
                 time.sleep(RATE_LIMIT_DELAY)
 
             except Exception as e:
+                # Retry the same cursor, but not forever: a permanent failure
+                # (e.g. API down) must abort visibly instead of looping
+                # endlessly on the same position.
+                if last_error_cursor == current_ms:
+                    consecutive_errors += 1
+                else:
+                    consecutive_errors = 1
+                    last_error_cursor = current_ms
                 print(f'\n  [{tf}] Error at {_ms_to_date(current_ms)}: {e}')
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                    print(f'  [{tf:>3s}] ABORT after {consecutive_errors} '
+                          f'consecutive errors at {_ms_to_date(current_ms)}: {e}')
+                    tf_failed = True
+                    break
                 time.sleep(2)
                 continue
 
         elapsed = time.time() - t_start
         n_db = count_candles(tf=tf, path=db_path)
-        if total_loaded == 0:
+        if spot_missing_windows:
+            print(f'\n  [{tf:>3s}] spot-merge missing for {spot_missing_windows} windows')
+        if total_loaded == 0 and not tf_failed:
             print(f'\n  [{tf:>3s}] WARNING: 0 candles loaded — source has no data for this range')
         print(f'\n  [{tf:>3s}] Done: {total_loaded:,} loaded in {elapsed:.1f}s, DB total: {n_db:,}')
         print()
+
+        if tf_failed:
+            failed_tfs.append(tf)
+        else:
+            ok_tfs.append(tf)
+
+    # Final summary: which timeframes completed and which failed.
+    print(f'  Summary: {len(ok_tfs)} TF(s) ok ({", ".join(ok_tfs) or "-"})')
+    if failed_tfs:
+        print(f'  FAILED: {", ".join(failed_tfs)}')
 
 
 def _resolve_shadow_db_path(explicit_path=None):

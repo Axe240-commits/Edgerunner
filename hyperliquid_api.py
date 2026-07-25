@@ -170,6 +170,10 @@ def fetch_candles(coin='BTC', interval='1m', start_ms=None, end_ms=None, limit=5
         })
 
     candles.sort(key=lambda c: c['timestamp'])
+    # Enforce the same strict half-open window [start_ms, end_ms) as the
+    # Binance source, so both source paths share one boundary convention.
+    candles = [c for c in candles
+               if start_ms <= c['timestamp'] < end_ms]
     if len(candles) > limit:
         candles = candles[-limit:]
     return candles
@@ -340,7 +344,7 @@ def fetch_binance_futures_volume(interval='1m', start_ms=None, end_ms=None, limi
     return result
 
 
-def _binance_get_json(url, retries=4):
+def _binance_get_json(url, retries=5):
     """GET a Binance endpoint with timeout + backoff on 429/5xx and network errors."""
     last_err = None
     for attempt in range(retries):
@@ -351,13 +355,22 @@ def _binance_get_json(url, retries=4):
         except urllib.error.HTTPError as e:
             last_err = e
             if e.code == 429 or e.code >= 500:
-                time.sleep(1.0 * (attempt + 1))
+                # Honor Binance's Retry-After header (seconds) when present,
+                # otherwise linear backoff.
+                retry_after = e.headers.get('Retry-After') if e.headers else None
+                try:
+                    delay = float(retry_after) if retry_after is not None \
+                        else 1.0 * (attempt + 1)
+                except (TypeError, ValueError):
+                    delay = 1.0 * (attempt + 1)
+                time.sleep(delay)
                 continue
             raise
         except urllib.error.URLError as e:
             last_err = e
             time.sleep(1.0 * (attempt + 1))
-    raise RuntimeError(f'Binance request failed after {retries} attempts: {last_err}')
+    raise RuntimeError(
+        f'Binance request failed after {retries} attempts: {last_err}')
 
 
 def fetch_binance_futures_candles(interval='1m', start_ms=None, end_ms=None, limit=1000):
@@ -437,6 +450,11 @@ def fetch_binance_futures_candles(interval='1m', start_ms=None, end_ms=None, lim
             'num_trades': int(k[8]),
         })
     candles.sort(key=lambda c: c['timestamp'])
+    # Binance endTime is INCLUSIVE — enforce a strict half-open window
+    # [start_ms, end_ms) before the limit cut, so the boundary candle is
+    # never stored twice across consecutive windows.
+    candles = [c for c in candles
+               if start_ms <= c['timestamp'] < end_ms]
     return candles[-limit:]
 
 
