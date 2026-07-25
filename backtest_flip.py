@@ -35,7 +35,7 @@ import argparse
 import json
 import sqlite3
 import sys
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 
@@ -65,7 +65,13 @@ def load_candles(conn, tf, since_ms, until_ms):
 # Setup tracking
 # ---------------------------------------------------------------------------
 
-def track_flip(h1, i, flip_dir, m15, m15_ts, cfg):
+def _funding_at(funding, ts_ms):
+    """Last funding print at or before ts_ms (point-in-time). None if none."""
+    idx = bisect_right([f[0] for f in funding], ts_ms) - 1
+    return funding[idx][1] if idx >= 0 else None
+
+
+def track_flip(h1, i, flip_dir, m15, m15_ts, cfg, funding=None):
     """Track one H1 break for a reclaim of the broken level.
 
     flip_dir='long': failed bear break (bos_bear) -> reclaim above the level.
@@ -175,10 +181,23 @@ def track_flip(h1, i, flip_dir, m15, m15_ts, cfg):
         rec['delta_turn'] = 1 if (tail_sum > 0 or dvm > 0) else 0
     else:
         rec['delta_turn'] = 1 if (tail_sum < 0 or dvm < 0) else 0
+
+    # Funding selection flag (--select funding): crowding at break time.
+    # Point-in-time join: LAST funding print at or before the break candle's
+    # open — never a print from inside or after the break candle.
+    if funding is not None:
+        rate = _funding_at(funding, b['timestamp'])
+        rec['funding_rate'] = rate
+        if rate is None:
+            rec['funding_ok'] = 0
+        elif long_flip:
+            rec['funding_ok'] = 1 if rate < 0 else 0  # shorts crowded
+        else:
+            rec['funding_ok'] = 1 if rate > 0 else 0  # longs crowded
     return rec
 
 
-def run_flips(h1, m15, cfg):
+def run_flips(h1, m15, cfg, funding=None):
     """Every H1 break becomes a flip candidate in the opposite direction."""
     m15_ts = [c['timestamp'] for c in m15]
     setups = []
@@ -186,9 +205,9 @@ def run_flips(h1, m15, cfg):
         if (b.get('break_depth') or 0) <= 0:
             continue
         if b.get('bos_bear') == 1:
-            setups.append(track_flip(h1, i, 'long', m15, m15_ts, cfg))
+            setups.append(track_flip(h1, i, 'long', m15, m15_ts, cfg, funding))
         if b.get('bos_bull') == 1:
-            setups.append(track_flip(h1, i, 'short', m15, m15_ts, cfg))
+            setups.append(track_flip(h1, i, 'short', m15, m15_ts, cfg, funding))
     return setups
 
 
@@ -215,10 +234,18 @@ def run_diagnose(h1, m15, cfg, setups):
     missed = [s for s in train if s['outcome'] == 'missed']
     tracked = [s for s in train if s['outcome'] in ('entered', 'missed')]
 
-    # Delta-turn selection (--select delta): the one allowed selection lever.
-    selected = [s for s in entered_all if s.get('delta_turn') == 1]
+    # Entry selection (--select): the one allowed selection lever.
+    #   delta   — delta picture turns at the reclaim (rec['delta_turn'])
+    #   funding — crowding: long flip only at NEGATIVE funding (shorts
+    #             crowded -> squeeze carries the reclaim), short mirrored
     select_mode = getattr(cfg, 'select', 'none')
-    entered = selected if select_mode == 'delta' else entered_all
+    if select_mode == 'delta':
+        selected = [s for s in entered_all if s.get('delta_turn') == 1]
+    elif select_mode == 'funding':
+        selected = [s for s in entered_all if s.get('funding_ok') == 1]
+    else:
+        selected = entered_all
+    entered = selected if select_mode in ('delta', 'funding') else entered_all
 
     result = {
         'mode': 'diagnose',
@@ -262,18 +289,26 @@ def run_diagnose(h1, m15, cfg, setups):
         half.setdefault(key, []).append(t)
     result['by_halfyear'] = {k: trade_stats(v) for k, v in sorted(half.items())}
 
-    # Delta selection: does the filter lift the family above the cost line?
-    result['delta_filter'] = {
+    # Selection: does the filter lift the family above the cost line?
+    # Reported with AND without filter, per target.
+    result['selection'] = {
+        'mode': select_mode,
         'selection_quote': (round(len(selected) / len(entered_all), 4)
-                            if entered_all else None),
+                            if entered_all and select_mode != 'none' else None),
         'n_all': len(entered_all),
         'n_selected': len(selected),
-        'active': select_mode == 'delta',
-        'without_filter_2R': trade_stats(
-            _trades(m15, entered_all, cfg, lambda s: ('r', 2.0))),
-        'with_filter_2R': trade_stats(
-            _trades(m15, selected, cfg, lambda s: ('r', 2.0))),
+        'active': select_mode in ('delta', 'funding'),
+        'without_filter': {},
+        'with_filter': {},
     }
+    _tgt_fns = {'1.5R': lambda s: ('r', 1.5), '2R': lambda s: ('r', 2.0),
+                '3R': lambda s: ('r', 3.0),
+                'swing_extreme': lambda s: ('price', s.get('swing_target'))}
+    for name, fn in _tgt_fns.items():
+        result['selection']['without_filter'][name] = trade_stats(
+            _trades(m15, entered_all, cfg, fn))
+        result['selection']['with_filter'][name] = trade_stats(
+            _trades(m15, selected, cfg, fn))
 
     # Cost sensitivity: setups/entries are cost-independent, re-simulate only.
     result['cost_sensitivity'] = {}
@@ -357,8 +392,8 @@ def render_md(result, cfg):
         for name, st in result['by_halfyear'].items():
             lines.append(f"- {name}: `{json.dumps(st)}`")
         lines.append('')
-        lines.append('## Delta selection (2R)')
-        lines.append(f"`{json.dumps(result['delta_filter'])}`")
+        lines.append('## Selection filter (with/without, per target)')
+        lines.append(f"`{json.dumps(result['selection'])}`")
         lines.append('')
         lines.append('## Cost sensitivity (baseline 2R)')
         for label, block in result['cost_sensitivity'].items():
@@ -390,9 +425,11 @@ def main(argv=None):
     p.add_argument('--validity', type=int, default=None,
                    help='setup validity in setup-tf candles '
                         '(default: 48 for 1h, 24 otherwise)')
-    p.add_argument('--select', choices=['none', 'delta'], default='none',
-                   help='entry selection filter: delta = only flip entries '
-                        'whose delta picture turns at the reclaim')
+    p.add_argument('--select', choices=['none', 'delta', 'funding'], default='none',
+                   help='entry selection filter: delta = delta turns at reclaim; '
+                        'funding = crowding (long flip only at negative funding)')
+    p.add_argument('--funding-db', help='path to funding.db (read-only, '
+                                        'required for --select funding)')
     p.add_argument('--since', help='Start date YYYY-MM-DD (default: all)')
     p.add_argument('--until', help='End date YYYY-MM-DD (default: all)')
     p.add_argument('--json-out', help='Write full results as JSON')
@@ -408,6 +445,18 @@ def main(argv=None):
                  validity_h1=(args.validity if args.validity is not None
                               else (48 if args.setup_tf == '1h' else 24)))
     cfg.select = args.select
+
+    # Optional funding series for --select funding (read-only, separate DB).
+    funding = None
+    if args.select == 'funding' or args.funding_db:
+        if not args.funding_db:
+            print('ERROR: --select funding needs --funding-db', file=sys.stderr)
+            return 1
+        fconn = sqlite3.connect(f'file:{args.funding_db}?mode=ro', uri=True)
+        funding = fconn.execute(
+            'SELECT ts_ms, rate FROM funding ORDER BY ts_ms').fetchall()
+        fconn.close()
+        print(f'Loaded {len(funding):,} funding prints')
 
     since_ms = _date_to_ms(args.since) if args.since else 0
     until_ms = _date_to_ms(args.until) if args.until else 2**62
@@ -426,7 +475,7 @@ def main(argv=None):
         print('ERROR: no candle data in range', file=sys.stderr)
         return 1
 
-    setups = run_flips(h1, m15, cfg)
+    setups = run_flips(h1, m15, cfg, funding)
     print(f'Flip setups tracked: {len(setups):,} '
           f'(reclaimed: {sum(1 for s in setups if s["entered"]):,})')
 

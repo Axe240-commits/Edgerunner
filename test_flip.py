@@ -101,6 +101,47 @@ class TestDeltaSelection(unittest.TestCase):
         self.assertEqual(s['delta_turn'], 0)
 
 
+class TestFundingJoin(unittest.TestCase):
+    """--select funding: point-in-time join, no funding from the future."""
+
+    def _flip(self, funding):
+        h1 = make_h1(50, 1, bear_break(T0 + H1_MS))
+        m15 = flat_m15(T0 + 2 * H1_MS, 48)
+        m15[0]['low'] = 94.0
+        m15[3]['close'] = 97.5
+        return run_flips(h1, m15, Config(), funding)[0]
+
+    def test_negative_funding_selects_long_flip(self):
+        # print before the break candle: negative rate -> shorts crowded
+        funding = [(T0, -0.0005)]
+        s = self._flip(funding)
+        self.assertEqual(s['outcome'], 'entered')
+        self.assertEqual(s['funding_ok'], 1)
+        self.assertAlmostEqual(s['funding_rate'], -0.0005)
+
+    def test_positive_funding_rejects_long_flip(self):
+        funding = [(T0, 0.0005)]
+        s = self._flip(funding)
+        self.assertEqual(s['funding_ok'], 0)
+
+    def test_no_future_leak(self):
+        # Positive print BEFORE the break, NEGATIVE print DURING/AFTER it.
+        # The join must use the pre-break print -> NOT selected.
+        break_ts = T0 + H1_MS
+        funding = [(T0, 0.0005), (break_ts + 3_600_001, -0.005)]
+        s = self._flip(funding)
+        self.assertEqual(s['funding_ok'], 0)
+        self.assertAlmostEqual(s['funding_rate'], 0.0005)
+
+    def test_last_print_before_break_wins(self):
+        # Two prints before the break: the LATER one counts.
+        break_ts = T0 + H1_MS
+        funding = [(T0, 0.0005), (break_ts - 1000, -0.001)]
+        s = self._flip(funding)
+        self.assertEqual(s['funding_ok'], 1)
+        self.assertAlmostEqual(s['funding_rate'], -0.001)
+
+
 class TestNoReclaim(unittest.TestCase):
     def test_no_reclaim_within_48_h1_is_dead(self):
         h1 = make_h1(50, 1, bear_break(T0 + H1_MS))
