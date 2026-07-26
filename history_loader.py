@@ -167,7 +167,28 @@ def load_history(coin='BTC', start_date=None, end_date=None,
                     candles = _fetch_hl_batch(coin, tf, current_ms, batch_end,
                                               HL_MAX_PER_REQUEST)
                 if not candles:
-                    break
+                    remaining = end_ms - current_ms
+                    if remaining > per_request * ims:
+                        # Empty MID-RANGE batch (API hiccup, not the true
+                        # end of data): feed the retry/abort path instead
+                        # of silently accepting a partial timeframe.
+                        if last_error_cursor == current_ms:
+                            consecutive_errors += 1
+                        else:
+                            consecutive_errors = 1
+                            last_error_cursor = current_ms
+                        print(f'\n  [{tf}] WARNING: empty mid-range batch at '
+                              f'{_ms_to_date(current_ms)} '
+                              f'(attempt {consecutive_errors})')
+                        if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                            print(f'  [{tf:>3s}] ABORT after '
+                                  f'{consecutive_errors} empty mid-range '
+                                  f'batches at {_ms_to_date(current_ms)}')
+                            tf_failed = True
+                            break
+                        time.sleep(2)
+                        continue
+                    break  # empty at the right edge: true end of data
 
                 # 2) Fetch Binance SPOT volume+delta for same range and merge.
                 #    Failures leave a spot gap — warn throttled, count for the
@@ -279,7 +300,12 @@ def load_history(coin='BTC', start_date=None, end_date=None,
             print(f'\n  [{tf:>3s}] spot-merge missing for {spot_missing_windows} windows')
         if total_loaded == 0 and not tf_failed:
             print(f'\n  [{tf:>3s}] WARNING: 0 candles loaded — source has no data for this range')
-        print(f'\n  [{tf:>3s}] Done: {total_loaded:,} loaded in {elapsed:.1f}s, DB total: {n_db:,}')
+        # complete = the loader walked the window to the right edge (an
+        # empty batch at the right edge counts as end of data, not as a
+        # gap). INCOMPLETE only via the abort path -> TF counts as failed.
+        status = 'INCOMPLETE' if tf_failed else 'complete'
+        print(f'\n  [{tf:>3s}] Done: {total_loaded:,}/{total_candles:,} loaded '
+              f'({status}) in {elapsed:.1f}s, DB total: {n_db:,}')
         print()
 
         if tf_failed:

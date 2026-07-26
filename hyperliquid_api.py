@@ -33,8 +33,15 @@ AGGREGATED_TIMEFRAMES = {
 }
 
 
-def _aggregate_ohlcv(candles, target_interval):
-    """Aggregate smaller candles into a larger derived interval."""
+def _aggregate_ohlcv(candles, target_interval, base_count=None):
+    """Aggregate smaller candles into a larger derived interval.
+
+    base_count: when set, only COMPLETE buckets are kept — a bucket must
+    contain exactly base_count base candles (e.g. 2 for 10m from 5m).
+    Documented strict rule: partial buckets at a window edge (e.g. a 10m
+    bucket with only one 5m candle) are DROPPED, never stored. The next
+    overlapping load stores their complete version.
+    """
     target_ms = INTERVAL_MS[target_interval]
     buckets = {}
     order = []
@@ -50,6 +57,7 @@ def _aggregate_ohlcv(candles, target_interval):
                 'close': candle['close'],
                 'volume': float(candle.get('volume') or 0),
                 'delta': float(candle.get('delta') or 0),
+                '_count': 1,
             }
             for key in (
                 'spot_volume', 'spot_delta',
@@ -68,6 +76,7 @@ def _aggregate_ohlcv(candles, target_interval):
         bucket['close'] = candle['close']
         bucket['volume'] += float(candle.get('volume') or 0)
         bucket['delta'] += float(candle.get('delta') or 0)
+        bucket['_count'] += 1
         for key in (
             'spot_volume', 'spot_delta',
             'futures_volume', 'futures_delta',
@@ -77,7 +86,12 @@ def _aggregate_ohlcv(candles, target_interval):
             if key in candle:
                 bucket[key] = float(bucket.get(key) or 0) + float(candle.get(key) or 0)
 
-    return [buckets[ts] for ts in sorted(order)]
+    result = [buckets[ts] for ts in sorted(order)]
+    if base_count is not None:
+        result = [b for b in result if b['_count'] >= base_count]
+    for b in result:
+        del b['_count']
+    return result
 
 
 def _aggregate_volume_map(volume_map, target_interval):
@@ -118,7 +132,8 @@ def fetch_candles(coin='BTC', interval='1m', start_ms=None, end_ms=None, limit=5
             end_ms=end_ms,
             limit=base_limit,
         )
-        aggregated = _aggregate_ohlcv(base_candles, interval)
+        aggregated = _aggregate_ohlcv(base_candles, interval,
+                                      base_count=ratio)
         if start_ms is not None:
             aggregated = [c for c in aggregated if c['timestamp'] >= start_ms]
         if end_ms is not None:
@@ -388,7 +403,7 @@ def fetch_binance_futures_candles(interval='1m', start_ms=None, end_ms=None, lim
     the base interval internally (Binance caps at 1000 klines/request).
     """
     if interval in AGGREGATED_TIMEFRAMES:
-        base_interval, _ratio = AGGREGATED_TIMEFRAMES[interval]
+        base_interval, ratio = AGGREGATED_TIMEFRAMES[interval]
         base_ims = INTERVAL_MS[base_interval]
         now_ms = int(time.time() * 1000)
         if end_ms is None:
@@ -412,7 +427,8 @@ def fetch_binance_futures_candles(interval='1m', start_ms=None, end_ms=None, lim
             cursor = new[-1]['timestamp'] + base_ims
             time.sleep(0.05)
 
-        aggregated = _aggregate_ohlcv(base_candles, interval)
+        aggregated = _aggregate_ohlcv(base_candles, interval,
+                                      base_count=ratio)
         aggregated = [c for c in aggregated
                       if start_ms <= c['timestamp'] < end_ms]
         return aggregated[-limit:]

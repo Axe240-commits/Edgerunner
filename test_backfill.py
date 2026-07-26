@@ -48,6 +48,49 @@ def _http_error(code, retry_after=None):
     return urllib.error.HTTPError('http://test', code, 'err', hdrs, None)
 
 
+def _http_error(code, retry_after=None):
+    hdrs = email.message.Message()
+    if retry_after is not None:
+        hdrs['Retry-After'] = str(retry_after)
+    return urllib.error.HTTPError('http://test', code, 'err', hdrs, None)
+
+
+def _candle_dicts(start_ts, n, ims=60_000):
+    """Binance-futures-shaped candle dicts for loader mocks."""
+    return [{'timestamp': start_ts + i * ims, 'open': 1.0, 'high': 2.0,
+             'low': 0.5, 'close': 1.5, 'volume': 10.0, 'delta': 1.0,
+             'futures_volume': 10.0, 'futures_delta': 1.0, 'num_trades': 5}
+            for i in range(n)]
+
+
+class TestPartialBuckets(unittest.TestCase):
+    """Incomplete derived 10m buckets (only one 5m candle) must be dropped,
+    on BOTH aggregation paths (binance-futures and hyperliquid)."""
+
+    START = 1_600_000_200_000  # 10m-aligned
+    END = START + 30 * 60_000
+
+    def test_binance_partial_bucket_dropped(self):
+        # 5m klines: two full 10m buckets + ONE trailing 5m (half bucket).
+        raw = [_kline(self.START + i * 300_000, 300_000) for i in range(5)]
+        with mock.patch.object(api, '_binance_get_json', return_value=raw), \
+                mock.patch.object(api.time, 'sleep'):
+            candles = api.fetch_binance_futures_candles(
+                '10m', start_ms=self.START, end_ms=self.END, limit=1000)
+        self.assertEqual([c['timestamp'] for c in candles],
+                         [self.START, self.START + 600_000])
+
+    def test_hl_partial_bucket_dropped(self):
+        hl_rows = [{'t': self.START + i * 300_000, 'o': '100', 'h': '110',
+                    'l': '90', 'c': '105', 'v': '10'} for i in range(5)]
+        with mock.patch('urllib.request.urlopen',
+                        return_value=_FakeResp(hl_rows)):
+            candles = api.fetch_candles('BTC', '10m', start_ms=self.START,
+                                        end_ms=self.END, limit=500)
+        self.assertEqual([c['timestamp'] for c in candles],
+                         [self.START, self.START + 600_000])
+
+
 class LoaderPatchMixin:
     """Common patches so load_history never touches DB, analysis or network."""
 
@@ -61,6 +104,43 @@ class LoaderPatchMixin:
         }
         patches.update(overrides)
         return patches
+
+
+class TestMidRangeEmpty(LoaderPatchMixin, unittest.TestCase):
+    """Empty batch mid-range -> retry/abort path -> TF failed + INCOMPLETE.
+    Empty batch at the right edge -> complete."""
+
+    def _run_loader(self, side_effect, end):
+        m_fetch = mock.Mock(side_effect=side_effect)
+        with mock.patch.multiple(hl, **self._loader_patches()), \
+                mock.patch.object(hl, 'fetch_binance_futures_candles', m_fetch), \
+                mock.patch('time.sleep'):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                hl.load_history(start_date='2025-01-20', end_date=end,
+                                timeframes=['1m'], db_path='/nonexistent/x.db',
+                                source='binance-futures')
+        return buf.getvalue(), m_fetch
+
+    def test_midrange_empty_marks_failed_incomplete(self):
+        start = hl._date_to_ms('2025-01-20')
+        out, m_fetch = self._run_loader(
+            [_candle_dicts(start, 1000), [], [], [], [], []], '2025-01-23')
+        self.assertIn('ABORT', out)
+        self.assertIn('FAILED', out)
+        self.assertIn('INCOMPLETE', out)
+        self.assertEqual(m_fetch.call_count, 1 + hl.MAX_CONSECUTIVE_ERRORS)
+
+    def test_empty_at_right_edge_is_complete(self):
+        start = hl._date_to_ms('2025-01-20')
+        # end = start + 2160min: after two full 1000-candle windows the last
+        # window (160min) comes back empty -> true end of data -> complete.
+        out, _ = self._run_loader(
+            [_candle_dicts(start, 1000),
+             _candle_dicts(start + 1000 * 60_000, 1000), []],
+            '2025-01-21')
+        self.assertNotIn('FAILED', out)
+        self.assertIn('(complete)', out)
 
 
 class TestStartFloor(LoaderPatchMixin, unittest.TestCase):
