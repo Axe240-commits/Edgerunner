@@ -215,6 +215,16 @@ def run_flips(h1, m15, cfg, funding=None):
 # Modes
 # ---------------------------------------------------------------------------
 
+def _select_entries(entered_all, select_mode):
+    """The one selection pipeline — shared by diagnose AND validate so OOS
+    tests exactly the strategy that was diagnosed."""
+    if select_mode == 'delta':
+        return [s for s in entered_all if s.get('delta_turn') == 1]
+    if select_mode == 'funding':
+        return [s for s in entered_all if s.get('funding_ok') == 1]
+    return entered_all
+
+
 def _trades(m15, entered, cfg, target_fn):
     trades = []
     for s in entered:
@@ -239,12 +249,7 @@ def run_diagnose(h1, m15, cfg, setups):
     #   funding — crowding: long flip only at NEGATIVE funding (shorts
     #             crowded -> squeeze carries the reclaim), short mirrored
     select_mode = getattr(cfg, 'select', 'none')
-    if select_mode == 'delta':
-        selected = [s for s in entered_all if s.get('delta_turn') == 1]
-    elif select_mode == 'funding':
-        selected = [s for s in entered_all if s.get('funding_ok') == 1]
-    else:
-        selected = entered_all
+    selected = _select_entries(entered_all, select_mode)
     entered = selected if select_mode in ('delta', 'funding') else entered_all
 
     result = {
@@ -324,10 +329,13 @@ def run_diagnose(h1, m15, cfg, setups):
 
 
 def run_validate(h1, m15, cfg, setups):
-    """ONE config (2R baseline), ONE OOS run."""
+    """ONE config (2R baseline + ACTIVE selection), ONE OOS run."""
     split = int(len(h1) * cfg.train_fraction)
     oos = [s for s in setups if s['breaker_index'] >= split]
-    entered = [s for s in oos if s['entered']]
+    select_mode = getattr(cfg, 'select', 'none')
+    # Same selection pipeline as diagnose — otherwise OOS would test a
+    # different strategy than the one that was diagnosed.
+    entered = _select_entries([s for s in oos if s['entered']], select_mode)
     trades = _trades(m15, entered, cfg, lambda s: ('r', 2.0))
     stats = trade_stats(trades)
 
@@ -345,6 +353,8 @@ def run_validate(h1, m15, cfg, setups):
     return {
         'mode': 'validate',
         'strategy': 'flip_v1',
+        'select': select_mode,
+        'n_selected_oos': len(entered),
         'config': {'stop': 'post_break_extreme-/+0.1ATR(M15)', 'target': '2R'},
         'oos_h1_candles': len(h1) - split,
         'setups_oos': len(oos),

@@ -81,5 +81,29 @@ class TestContinuationEntry(unittest.TestCase):
         self.assertAlmostEqual(s['pullback_stop'], 99.0)  # 96 + 1.5*2
 
 
+    def test_chandelier_uses_only_closed_bars(self):
+        # Bar 2 would RAISE the trail to 106 via its high (112) AND breach
+        # that new trail with its low (105.5). Conservative order: exit is
+        # checked against the OLD trail (102) first -> no exit on bar 2;
+        # the exit may only happen on bar 3 against the updated trail.
+        h4 = make_setup()
+        h4[1] = bull_break(T0 + H4_MS)
+        ex = flat_exec(h4[2]['timestamp'], 100)
+        ex[1]['high'] = 108.0   # trail becomes 102 for bar 2
+        ex[2]['high'] = 112.0   # would raise trail to 106 intrabar...
+        ex[2]['low'] = 105.5    # ...and breaches 106 but NOT old trail 102
+        ex[3]['low'] = 105.9    # now the (closed-bar) trail 106 is hit
+        cfg = Config(setup_tf='4h', exec_tf='1h')
+        cfg.trend_stop_atr_mult = 1.5
+        s = run_continuations(h4, ex, cfg)[0]
+        t = simulate_trail(ex, s, cfg)
+        self.assertEqual(t['exit_reason'], 'trail')
+        # exit on the 4th sim bar (ex[3]) against the closed-bar trail —
+        # NOT on ex[2], whose own high would have tightened the trail
+        # intrabar (old code exited there).
+        self.assertEqual(t['bars_held'], 4)
+        self.assertAlmostEqual(t['exit'], 106.0)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -182,12 +182,14 @@ class TestV2M1Trigger(unittest.TestCase):
         # M1 bars from the touch candle onward (flat inside the zone)
         m1 = [mk(touch_ts + k * 60_000, close=100.2, high=100.3, low=99.8)
               for k in range(120)]
-        # M1 structure break downwards at bar 10
-        m1[10].update(bos_bear=1, break_depth=0.2, atr14=0.5,
+        # M1 structure break downwards at bar 20 — AFTER the touching M15
+        # candle has closed (touch + 15min), so no intrabar information is
+        # used. Bars 0..14 lie inside the still-running M15 candle.
+        m1[20].update(bos_bear=1, break_depth=0.2, atr14=0.5,
                       high=100.4, close=99.7)
         # afterwards: straight down through the post-break extreme
-        for k in range(11, 20):
-            m1[k].update(high=99.6, low=93.9 if k == 11 else 93.5, close=94.0)
+        for k in range(21, 30):
+            m1[k].update(high=99.6, low=93.9 if k == 21 else 93.5, close=94.0)
         return h1, m15, m1
 
     def _loader(self, m1):
@@ -215,7 +217,7 @@ class TestV2M1Trigger(unittest.TestCase):
         # Move the M1 trigger behind the invalidation: M15 close above
         # breaker high (101) at m15[4] -> window ends at m15[4]+15min,
         # the BOS at touch+50min lies outside -> invalid, no entry.
-        m1[10].update(bos_bear=0, break_depth=0.0)
+        m1[20].update(bos_bear=0, break_depth=0.0)
         m1[50].update(bos_bear=1, break_depth=0.2, atr14=0.5, close=99.7)
         m15[4]['close'] = 102.0
         cfg = Config(strategy='v2')
@@ -225,10 +227,23 @@ class TestV2M1Trigger(unittest.TestCase):
                          'm15_close_beyond_breaker_during_m1_wait')
         self.assertFalse(s['entered'])
 
+    def test_no_lookahead_into_running_m15_candle(self):
+        # The ONLY M1 BOS lies INSIDE the touching M15 candle (before its
+        # close). With strictly-closed touch semantics this must NOT
+        # trigger an entry (it would have, before the lookahead fix).
+        h1, m15, m1 = self._build()
+        m1[20].update(bos_bear=0, break_depth=0.0)   # remove the valid one
+        m1[10].update(bos_bear=1, break_depth=0.2, atr14=0.5, close=99.7)
+        cfg = Config(strategy='v2')
+        s = run_setups_v2(h1, m15, cfg, self._loader(m1))[0]
+        self.assertFalse(s['entered'])
+        self.assertEqual(s['outcome'], 'missed')
+        self.assertEqual(s['invalidation'], 'no_m1_trigger')
+
     def test_entry_too_far_is_missed(self):
         h1, m15, m1 = self._build()
         # BOS candle closes 1.5 zone heights below the zone edge (limit: 1.0)
-        m1[10]['close'] = 98.5
+        m1[20]['close'] = 98.5
         cfg = Config(strategy='v2')
         s = run_setups_v2(h1, m15, cfg, self._loader(m1))[0]
         self.assertEqual(s['outcome'], 'missed')

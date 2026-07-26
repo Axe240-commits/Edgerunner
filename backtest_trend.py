@@ -104,6 +104,10 @@ def run_continuations(setup_candles, exec_candles, cfg):
 def simulate_trail(candles, setup, cfg, trail_mult=3.0):
     """Chandelier exit: trail = extreme since entry -/+ trail_mult x ATR.
 
+    Conservative ordering (documented): within each bar the exit is checked
+    FIRST against the trail computed from PREVIOUS bars only; only then is
+    the extreme advanced for the next bar. The running bar's own high/low
+    never tightens the trail it is checked against (no intrabar future).
     The active stop is the better of (initial stop, trail). Exits at the
     trail/stop price or mark-to-market at timeout. R is measured against the
     INITIAL stop distance.
@@ -127,17 +131,23 @@ def simulate_trail(candles, setup, cfg, trail_mult=3.0):
     for k in range(start, end):
         c = candles[k]
         bars_held += 1
-        extreme = (c['high'] if extreme is None else max(extreme, c['high'])) \
-            if long_ else \
-            (c['low'] if extreme is None else min(extreme, c['low']))
-        trail = extreme - trail_mult * atr if long_ else extreme + trail_mult * atr
-        active = max(init_stop, trail) if long_ else min(init_stop, trail)
+        # 1) exit check against the OLD trail (previous bars only)
+        if extreme is not None:
+            trail = extreme - trail_mult * atr if long_ \
+                else extreme + trail_mult * atr
+            active = max(init_stop, trail) if long_ else min(init_stop, trail)
+        else:
+            active = init_stop
         if long_ and c['low'] <= active:
             exit_price, reason = active, 'trail'
             break
         if not long_ and c['high'] >= active:
             exit_price, reason = active, 'trail'
             break
+        # 2) only now advance the extreme for the NEXT bar
+        extreme = (c['high'] if extreme is None else max(extreme, c['high'])) \
+            if long_ else \
+            (c['low'] if extreme is None else min(extreme, c['low']))
     if exit_price is None and end > start:
         exit_price = candles[end - 1]['close']
     if exit_price is None:

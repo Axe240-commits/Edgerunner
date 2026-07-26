@@ -142,6 +142,42 @@ class TestFundingJoin(unittest.TestCase):
         self.assertAlmostEqual(s['funding_rate'], -0.001)
 
 
+class TestValidateSelection(unittest.TestCase):
+    """F2: validate must apply the SAME selection pipeline as diagnose."""
+
+    def test_validate_applies_funding_selection(self):
+        from backtest_flip import run_validate
+        h1 = [mk(T0 + i * H1_MS) for i in range(10)]
+        m15 = flat_m15(T0 + H1_MS, 4)
+        base = {'entered': True, 'outcome': 'entered',
+                'entry_ts': m15[0]['timestamp'], 'entry_price': 100.0,
+                'entry_idx': 0, 'pullback_stop': 99.0, 'breaker_stop': 99.0,
+                'max_hold': 96, 'direction': 'long', 'breaker_ts': T0,
+                'swing_target': None}
+        s1 = dict(base, breaker_index=8, funding_ok=1, direction='long')
+        s2 = dict(base, breaker_index=9, funding_ok=0, direction='long')
+        cfg = Config()
+        cfg.select = 'funding'
+        res = run_validate(h1, m15, cfg, [s1, s2])
+        self.assertEqual(res['select'], 'funding')
+        self.assertEqual(res['n_selected_oos'], 1)  # s2 filtered out
+        self.assertEqual(res['stats']['n'], 1)
+
+    def test_validate_without_selection_keeps_all(self):
+        from backtest_flip import run_validate
+        h1 = [mk(T0 + i * H1_MS) for i in range(10)]
+        m15 = flat_m15(T0 + H1_MS, 4)
+        base = {'entered': True, 'outcome': 'entered',
+                'entry_ts': m15[0]['timestamp'], 'entry_price': 100.0,
+                'entry_idx': 0, 'pullback_stop': 99.0, 'breaker_stop': 99.0,
+                'max_hold': 96, 'direction': 'long', 'breaker_ts': T0,
+                'swing_target': None}
+        setups = [dict(base, breaker_index=8), dict(base, breaker_index=9)]
+        res = run_validate(h1, m15, Config(), setups)
+        self.assertEqual(res['n_selected_oos'], 2)
+        self.assertEqual(res['stats']['n'], 2)
+
+
 class TestNoReclaim(unittest.TestCase):
     def test_no_reclaim_within_48_h1_is_dead(self):
         h1 = make_h1(50, 1, bear_break(T0 + H1_MS))

@@ -341,16 +341,20 @@ def _track_setup_v2(h1, i, direction, m15, m15_ts, cfg):
         for k in range(lo, hi):
             c = m15[k]
             if touch_ts is None:
+                # Zone touch: the touching exec candle's high/low is only
+                # known INTRABAR — strictly closed rule: the touch takes
+                # effect from the candle's CLOSE (timestamp + exec_ms), so
+                # the M1 scan never uses the still-running exec candle.
                 if short:
                     post_extreme = (c['low'] if post_extreme is None
                                     else min(post_extreme, c['low']))
                     if c['high'] >= zone_low:
-                        touch_ts = c['timestamp']
+                        touch_ts = c['timestamp'] + exec_ms
                 else:
                     post_extreme = (c['high'] if post_extreme is None
                                     else max(post_extreme, c['high']))
                     if c['low'] <= zone_high:
-                        touch_ts = c['timestamp']
+                        touch_ts = c['timestamp'] + exec_ms
             # v2 invalidation: exec-tf CLOSE beyond the breaker extreme. The
             # close is known only at the end of the candle, so it takes
             # effect from the next exec bar onward (point-in-time).

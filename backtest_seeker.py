@@ -117,18 +117,34 @@ def track_kill(setup_tf_candles, i, direction, exec_candles, exec_ts, cfg):
     incomplete = end_j < i + cfg.validity_h1
 
     # --- Variant B (reclaim style): entry directly at the kill close.
+    # Guard (documented rule): the direct entry is only executable when the
+    # stop actually PROTECTS — i.e. it sits on the correct side of the entry
+    # (short: above, long: below) AND the stop distance covers 2x round-trip
+    # costs in price (4 x cost_frac x entry). An ATR-based floor is
+    # deliberately NOT used: a fade at kill close always sits between the
+    # extreme and extreme+buffer, so any ATR floor >= buffer would
+    # structurally exclude every direct entry.
+    entry_b = b['close']
+    risk_b = abs(entry_b - stop)
+    min_risk = 4.0 * cfg.cost_frac * entry_b
+    protective = ((short and stop > entry_b)
+                  or (not short and stop < entry_b)) and risk_b >= min_risk
     # Simulated separately from exec bars strictly after the kill close.
     first_k = bisect_left(exec_ts, b['timestamp'] + setup_ms)
-    rec['variant_b'] = {
-        'entry_idx': first_k - 1,   # sim starts at first_k (entry bar "before")
-        'entry_ts': b['timestamp'] + setup_ms,
-        'entry_price': b['close'],
-        'max_hold': cfg.max_hold_bars,
-        'direction': direction,
-        'pullback_stop': stop,
-        'breaker_stop': stop,
-        'swing_target': rec['swing_target'],
-    }
+    if protective:
+        rec['variant_b'] = {
+            'entry_idx': first_k - 1,   # sim starts at first_k (entry bar "before")
+            'entry_ts': b['timestamp'] + setup_ms,
+            'entry_price': entry_b,
+            'max_hold': cfg.max_hold_bars,
+            'direction': direction,
+            'pullback_stop': stop,
+            'breaker_stop': stop,
+            'swing_target': rec['swing_target'],
+        }
+    else:
+        rec['variant_b'] = None
+        rec['variant_b_skip'] = 'non_protective_stop'
 
     # --- Variant A: retest of the seeker zone, close-out entry.
     retest_started = False
@@ -276,6 +292,10 @@ def run_diagnose(setup_candles, exec_candles, cfg, setups):
     trades = _trades(exec_candles, entries_b, cfg,
                      lambda s: ('price', s.get('swing_target')))
     result['variant_b']['targets']['opposite_swing'] = trade_stats(trades)
+
+    # Variant B skip accounting (non-protective direct entries).
+    result['variant_b_skipped'] = sum(
+        1 for s in train if s.get('variant_b_skip') == 'non_protective_stop')
 
     # Baseline (variant A, 2R) deep stats
     base = _trades(exec_candles, entered, cfg, lambda s: ('r', 2.0))

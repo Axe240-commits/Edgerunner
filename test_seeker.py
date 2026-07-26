@@ -70,11 +70,23 @@ class TestKilledHsShort(unittest.TestCase):
 
     def test_variant_b_entry_is_kill_close(self):
         h4, ex = self._build()
+        # Kill closes at 101.2 -> stop 101.5 is ABOVE the short entry and
+        # risk 0.3 >= 2x round-trip costs (4 x 0.0007 x 101.2 = 0.28)
+        # -> protective, variant B executable.
+        h4[3]['close'] = 101.2
         cfg = Config(setup_tf='4h', exec_tf='1h', validity_h1=24)
         s = run_seeker_kills(h4, ex, cfg)[0]
-        self.assertAlmostEqual(s['variant_b']['entry_price'], 101.5)
-        # variant B: kill close 101.5 is NOT above stop 101.5 -> risk ~0 -> skip
-        # (honest behavior: untradable fades are dropped, not fudged)
+        self.assertIsNotNone(s['variant_b'])
+        self.assertAlmostEqual(s['variant_b']['entry_price'], 101.2)
+
+    def test_variant_b_skipped_when_stop_not_protective(self):
+        h4, ex = self._build()
+        # Kill closes at 101.4 -> stop 101.5, risk 0.1 < 0.5*ATR -> guard.
+        h4[3]['close'] = 101.4
+        cfg = Config(setup_tf='4h', exec_tf='1h', validity_h1=24)
+        s = run_seeker_kills(h4, ex, cfg)[0]
+        self.assertIsNone(s['variant_b'])
+        self.assertEqual(s['variant_b_skip'], 'non_protective_stop')
 
 
 class TestNoKillNoSetup(unittest.TestCase):
