@@ -1,0 +1,2260 @@
+{
+ "mode": "diagnose",
+ "strategy": "seeker_kill",
+ "train_fraction": 0.65,
+ "setup_candles_total": 3300,
+ "train_candles": 2145,
+ "kills_train": 222,
+ "outcomes": {
+  "entered": 154,
+  "missed/no_retest": 19,
+  "missed/no_exit_close": 49
+ },
+ "entered": 154,
+ "entry_quote": 0.6937,
+ "retest_bars": {
+  "n": 154,
+  "mean": 17.9481,
+  "p25": 2.0,
+  "p50": 8.5,
+  "p75": 24.5,
+  "p90": 52.4
+ },
+ "variant_a": {
+  "targets": {
+   "1.5R": {
+    "n": 154,
+    "wins": 71,
+    "win_rate": 0.461,
+    "wilson95": [
+     0.3842,
+     0.5398
+    ],
+    "net_r": -1.9,
+    "expectancy_r": -0.0124,
+    "avg_win_r": 1.262,
+    "avg_loss_r": 1.103,
+    "breakeven_wr": 0.4663
+   },
+   "2R": {
+    "n": 154,
+    "wins": 58,
+    "win_rate": 0.3766,
+    "wilson95": [
+     0.304,
+     0.4553
+    ],
+    "net_r": -11.62,
+    "expectancy_r": -0.0755,
+    "avg_win_r": 1.639,
+    "avg_loss_r": 1.111,
+    "breakeven_wr": 0.4041
+   },
+   "3R": {
+    "n": 154,
+    "wins": 48,
+    "win_rate": 0.3117,
+    "wilson95": [
+     0.2439,
+     0.3887
+    ],
+    "net_r": -17.48,
+    "expectancy_r": -0.1135,
+    "avg_win_r": 2.057,
+    "avg_loss_r": 1.096,
+    "breakeven_wr": 0.3477
+   },
+   "opposite_swing": {
+    "n": 148,
+    "wins": 64,
+    "win_rate": 0.4324,
+    "wilson95": [
+     0.3553,
+     0.513
+    ],
+    "net_r": 6.22,
+    "expectancy_r": 0.042,
+    "avg_win_r": 1.536,
+    "avg_loss_r": 1.096,
+    "breakeven_wr": 0.4165
+   }
+  }
+ },
+ "variant_b": {
+  "targets": {
+   "1.5R": {
+    "n": 79,
+    "wins": 43,
+    "win_rate": 0.5443,
+    "wilson95": [
+     0.435,
+     0.6495
+    ],
+    "net_r": 6.98,
+    "expectancy_r": 0.0883,
+    "avg_win_r": 1.162,
+    "avg_loss_r": 1.194,
+    "breakeven_wr": 0.5068
+   },
+   "2R": {
+    "n": 79,
+    "wins": 40,
+    "win_rate": 0.5063,
+    "wilson95": [
+     0.3984,
+     0.6137
+    ],
+    "net_r": 15.44,
+    "expectancy_r": 0.1954,
+    "avg_win_r": 1.55,
+    "avg_loss_r": 1.194,
+    "breakeven_wr": 0.4351
+   },
+   "3R": {
+    "n": 79,
+    "wins": 33,
+    "win_rate": 0.4177,
+    "wilson95": [
+     0.3153,
+     0.5278
+    ],
+    "net_r": 13.97,
+    "expectancy_r": 0.1768,
+    "avg_win_r": 2.107,
+    "avg_loss_r": 1.208,
+    "breakeven_wr": 0.3644
+   },
+   "opposite_swing": {
+    "n": 76,
+    "wins": 32,
+    "win_rate": 0.4211,
+    "wilson95": [
+     0.3165,
+     0.5332
+    ],
+    "net_r": 33.73,
+    "expectancy_r": 0.4439,
+    "avg_win_r": 2.714,
+    "avg_loss_r": 1.207,
+    "breakeven_wr": 0.3078
+   }
+  }
+ },
+ "variant_b_skipped": 143,
+ "baseline_trades": [
+  {
+   "direction": "long",
+   "entry_ts": 1738202400000,
+   "entry": 104644.1,
+   "stop": 103685.96431776568,
+   "target": 106560.37136446865,
+   "exit": 103685.96431776568,
+   "exit_reason": "stop",
+   "bars_held": 40,
+   "r_net": -1.217432737534558,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1737968400000,
+   "entry": 99365.9,
+   "stop": 97265.84703929797,
+   "target": 103566.00592140405,
+   "exit": 103566.00592140405,
+   "exit_reason": "target",
+   "bars_held": 30,
+   "r_net": 1.9033681960794215,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1738224000000,
+   "entry": 105010.0,
+   "stop": 105920.105603877,
+   "target": 103189.78879224599,
+   "exit": 105920.105603877,
+   "exit_reason": "stop",
+   "bars_held": 6,
+   "r_net": -1.2317644289907692,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1738256400000,
+   "entry": 105240.1,
+   "stop": 106844.61933736071,
+   "target": 102031.0613252786,
+   "exit": 102031.0613252786,
+   "exit_reason": "target",
+   "bars_held": 27,
+   "r_net": 1.8708204030334687,
+   "win": true
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1738609200000,
+   "entry": 101831.9,
+   "stop": 99911.756733046,
+   "target": 105672.18653390798,
+   "exit": 99911.756733046,
+   "exit_reason": "stop",
+   "bars_held": 10,
+   "r_net": -1.1050669813055483,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1738609200000,
+   "entry": 101831.9,
+   "stop": 99893.50625211414,
+   "target": 105708.68749577171,
+   "exit": 99893.50625211414,
+   "exit_reason": "stop",
+   "bars_held": 10,
+   "r_net": -1.1040683331093721,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1738602000000,
+   "entry": 99150.1,
+   "stop": 97294.65288308298,
+   "target": 102860.99423383406,
+   "exit": 97294.65288308298,
+   "exit_reason": "stop",
+   "bars_held": 28,
+   "r_net": -1.1058746170084721,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1738929600000,
+   "entry": 97917.3,
+   "stop": 95645.84498724823,
+   "target": 102460.21002550355,
+   "exit": 95645.84498724823,
+   "exit_reason": "stop",
+   "bars_held": 8,
+   "r_net": -1.0852154869458486,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1739376000000,
+   "entry": 96944.3,
+   "stop": 95257.75057104634,
+   "target": 100317.39885790732,
+   "exit": 95257.75057104634,
+   "exit_reason": "stop",
+   "bars_held": 24,
+   "r_net": -1.1139617062337044,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1740016800000,
+   "entry": 97092.2,
+   "stop": 96010.87548883914,
+   "target": 99254.84902232171,
+   "exit": 99254.84902232171,
+   "exit_reason": "target",
+   "bars_held": 35,
+   "r_net": 1.8184198665657516,
+   "win": true
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1739908800000,
+   "entry": 94164.3,
+   "stop": 93068.26026602827,
+   "target": 96356.37946794346,
+   "exit": 96356.37946794346,
+   "exit_reason": "target",
+   "bars_held": 14,
+   "r_net": 1.8261735650973638,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1740164400000,
+   "entry": 95247.5,
+   "stop": 96995.30206715061,
+   "target": 91751.89586569878,
+   "exit": 91751.89586569878,
+   "exit_reason": "target",
+   "bars_held": 76,
+   "r_net": 1.8930088255528015,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1740085200000,
+   "entry": 98039.8,
+   "stop": 99383.18976962432,
+   "target": 95353.02046075136,
+   "exit": 99383.18976962432,
+   "exit_reason": "stop",
+   "bars_held": 16,
+   "r_net": -1.146958830738167,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1740150000000,
+   "entry": 98057.6,
+   "stop": 99356.18619286861,
+   "target": 95460.4276142628,
+   "exit": 95460.4276142628,
+   "exit_reason": "target",
+   "bars_held": 4,
+   "r_net": 1.8509779106870345,
+   "win": true
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1740927600000,
+   "entry": 87390.1,
+   "stop": 85545.71923825094,
+   "target": 91078.86152349814,
+   "exit": 91078.86152349814,
+   "exit_reason": "target",
+   "bars_held": 1,
+   "r_net": 1.9032363787213677,
+   "win": true
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1740754800000,
+   "entry": 83948.1,
+   "stop": 81672.744487048,
+   "target": 88498.81102590403,
+   "exit": 88498.81102590403,
+   "exit_reason": "target",
+   "bars_held": 48,
+   "r_net": 1.9242110034918611,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1741050000000,
+   "entry": 83353.9,
+   "stop": 86498.56797346094,
+   "target": 77064.5640530781,
+   "exit": 86498.56797346094,
+   "exit_reason": "stop",
+   "bars_held": 17,
+   "r_net": -1.0540128463185634,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1741111200000,
+   "entry": 86708.9,
+   "stop": 84359.57827642991,
+   "target": 91407.54344714017,
+   "exit": 91407.54344714017,
+   "exit_reason": "target",
+   "bars_held": 31,
+   "r_net": 1.9241838860722498,
+   "win": true
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1741564800000,
+   "entry": 81242.0,
+   "stop": 79448.62639797175,
+   "target": 84828.7472040565,
+   "exit": 79448.62639797175,
+   "exit_reason": "stop",
+   "bars_held": 14,
+   "r_net": -1.0896024265196194,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1741636800000,
+   "entry": 79270.3,
+   "stop": 77646.98707529252,
+   "target": 82516.92584941497,
+   "exit": 77646.98707529252,
+   "exit_reason": "stop",
+   "bars_held": 4,
+   "r_net": -1.096664841810187,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1741971600000,
+   "entry": 84320.0,
+   "stop": 85710.49916262306,
+   "target": 81539.00167475388,
+   "exit": 81539.00167475388,
+   "exit_reason": "target",
+   "bars_held": 92,
+   "r_net": 1.8807198118969966,
+   "win": true
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1742144400000,
+   "entry": 83869.7,
+   "stop": 83263.95143847464,
+   "target": 85081.1971230507,
+   "exit": 83263.95143847464,
+   "exit_reason": "stop",
+   "bars_held": 2,
+   "r_net": -1.2759125849471447,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1742313600000,
+   "entry": 81814.2,
+   "stop": 80801.55682084426,
+   "target": 83839.48635831148,
+   "exit": 83839.48635831148,
+   "exit_reason": "target",
+   "bars_held": 19,
+   "r_net": 1.8364145537459593,
+   "win": true
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1742572800000,
+   "entry": 84066.9,
+   "stop": 82822.37667474145,
+   "target": 86555.94665051709,
+   "exit": 86555.94665051709,
+   "exit_reason": "target",
+   "bars_held": 56,
+   "r_net": 1.8629010455749664,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1742871600000,
+   "entry": 86477.4,
+   "stop": 87714.17232954534,
+   "target": 84003.8553409093,
+   "exit": 87714.17232954534,
+   "exit_reason": "stop",
+   "bars_held": 10,
+   "r_net": -1.140843684943674,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1743494400000,
+   "entry": 84069.9,
+   "stop": 83330.02211725524,
+   "target": 85549.6557654895,
+   "exit": 83330.02211725524,
+   "exit_reason": "stop",
+   "bars_held": 6,
+   "r_net": -1.2262534480639316,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1743393600000,
+   "entry": 81806.0,
+   "stop": 80984.58410793389,
+   "target": 83448.83178413223,
+   "exit": 83448.83178413223,
+   "exit_reason": "target",
+   "bars_held": 10,
+   "r_net": 1.7988170993764663,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1743631200000,
+   "entry": 82784.3,
+   "stop": 83741.4539380773,
+   "target": 80869.9921238454,
+   "exit": 83741.4539380773,
+   "exit_reason": "stop",
+   "bars_held": 3,
+   "r_net": -1.1739801167956119,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1743631200000,
+   "entry": 82784.3,
+   "stop": 84182.32865678608,
+   "target": 79988.24268642785,
+   "exit": 84182.32865678608,
+   "exit_reason": "stop",
+   "bars_held": 34,
+   "r_net": -1.1194300473358108,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1743627600000,
+   "entry": 84812.7,
+   "stop": 85895.30745975356,
+   "target": 82647.48508049287,
+   "exit": 82647.48508049287,
+   "exit_reason": "target",
+   "bars_held": 1,
+   "r_net": 1.8453177247470702,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1743969600000,
+   "entry": 78843.7,
+   "stop": 82958.54979767746,
+   "target": 70614.00040464506,
+   "exit": 82958.54979767746,
+   "exit_reason": "stop",
+   "bars_held": 70,
+   "r_net": -1.039321544589304,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1744059600000,
+   "entry": 79200.0,
+   "stop": 77838.81535302299,
+   "target": 81922.36929395402,
+   "exit": 77838.81535302299,
+   "exit_reason": "stop",
+   "bars_held": 19,
+   "r_net": -1.1153692231996462,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1744034400000,
+   "entry": 78999.2,
+   "stop": 76162.05354209278,
+   "target": 84673.49291581444,
+   "exit": 76162.05354209278,
+   "exit_reason": "stop",
+   "bars_held": 34,
+   "r_net": -1.0546891941759464,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1744408800000,
+   "entry": 83380.8,
+   "stop": 84278.39345006218,
+   "target": 81585.61309987564,
+   "exit": 84278.39345006218,
+   "exit_reason": "stop",
+   "bars_held": 15,
+   "r_net": -1.1867874519788797,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1744549200000,
+   "entry": 83577.0,
+   "stop": 85111.89853182256,
+   "target": 80507.20293635488,
+   "exit": 85111.89853182256,
+   "exit_reason": "stop",
+   "bars_held": 11,
+   "r_net": -1.1099023127812353,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1745150400000,
+   "entry": 84326.8,
+   "stop": 83726.6654670857,
+   "target": 85527.06906582862,
+   "exit": 85527.06906582862,
+   "exit_reason": "target",
+   "bars_held": 12,
+   "r_net": 1.7169736788166627,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1745254800000,
+   "entry": 86812.6,
+   "stop": 88719.84323191586,
+   "target": 82998.1135361683,
+   "exit": 88719.84323191586,
+   "exit_reason": "stop",
+   "bars_held": 8,
+   "r_net": -1.0920346394704952,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1745600400000,
+   "entry": 94465.7,
+   "stop": 96081.25776760586,
+   "target": 91234.58446478828,
+   "exit": 95199.1,
+   "exit_reason": "timeout",
+   "bars_held": 96,
+   "r_net": -0.5713598229098971,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1745816400000,
+   "entry": 94183.2,
+   "stop": 93605.36668735371,
+   "target": 95338.86662529256,
+   "exit": 95338.86662529256,
+   "exit_reason": "target",
+   "bars_held": 6,
+   "r_net": 1.672012564043211,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1746399600000,
+   "entry": 94230.2,
+   "stop": 95539.48248692286,
+   "target": 91611.63502615427,
+   "exit": 95539.48248692286,
+   "exit_reason": "stop",
+   "bars_held": 47,
+   "r_net": -1.144941740519974,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1746118800000,
+   "entry": 96746.5,
+   "stop": 97657.87480928551,
+   "target": 94923.75038142898,
+   "exit": 97657.87480928551,
+   "exit_reason": "stop",
+   "bars_held": 21,
+   "r_net": -1.21330891838197,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1746169200000,
+   "entry": 96302.0,
+   "stop": 97244.769809038,
+   "target": 94416.460381924,
+   "exit": 97244.769809038,
+   "exit_reason": "stop",
+   "bars_held": 7,
+   "r_net": -1.2052958929672517,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1746583200000,
+   "entry": 96582.3,
+   "stop": 97641.48373583987,
+   "target": 94463.93252832028,
+   "exit": 97641.48373583987,
+   "exit_reason": "stop",
+   "bars_held": 22,
+   "r_net": -1.1833711915731218,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1747072800000,
+   "entry": 101583.7,
+   "stop": 102776.7394708253,
+   "target": 99197.6210583494,
+   "exit": 102776.7394708253,
+   "exit_reason": "stop",
+   "bars_held": 2,
+   "r_net": -1.1712939466532943,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1746946800000,
+   "entry": 103327.9,
+   "stop": 104664.68395157171,
+   "target": 100654.33209685655,
+   "exit": 104664.68395157171,
+   "exit_reason": "stop",
+   "bars_held": 4,
+   "r_net": -1.1555917721087365,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1747126800000,
+   "entry": 103406.9,
+   "stop": 101905.99122814751,
+   "target": 106408.71754370496,
+   "exit": 101905.99122814751,
+   "exit_reason": "stop",
+   "bars_held": 46,
+   "r_net": -1.1367923854390787,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1747080000000,
+   "entry": 102639.6,
+   "stop": 100325.65614042268,
+   "target": 107267.48771915465,
+   "exit": 103645.1,
+   "exit_reason": "timeout",
+   "bars_held": 96,
+   "r_net": 0.3453909638697972,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1747587600000,
+   "entry": 104805.2,
+   "stop": 107073.08462880428,
+   "target": 100269.43074239143,
+   "exit": 107073.08462880428,
+   "exit_reason": "stop",
+   "bars_held": 7,
+   "r_net": -1.093425512893266,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1747612800000,
+   "entry": 105225.3,
+   "stop": 107138.41748606083,
+   "target": 101399.06502787834,
+   "exit": 107138.41748606083,
+   "exit_reason": "stop",
+   "bars_held": 43,
+   "r_net": -1.111004012578084,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1748448000000,
+   "entry": 107384.6,
+   "stop": 106406.40648330803,
+   "target": 109340.98703338395,
+   "exit": 106406.40648330803,
+   "exit_reason": "stop",
+   "bars_held": 22,
+   "r_net": -1.2185569652989423,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1748818800000,
+   "entry": 105583.3,
+   "stop": 104178.56202012488,
+   "target": 108392.77595975024,
+   "exit": 104178.56202012488,
+   "exit_reason": "stop",
+   "bars_held": 12,
+   "r_net": -1.1493245466594117,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1748854800000,
+   "entry": 104530.5,
+   "stop": 105120.313511462,
+   "target": 103350.87297707601,
+   "exit": 105120.313511462,
+   "exit_reason": "stop",
+   "bars_held": 13,
+   "r_net": -1.3554527141837966,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1748984400000,
+   "entry": 105312.0,
+   "stop": 106169.44723859253,
+   "target": 103597.10552281493,
+   "exit": 103597.10552281493,
+   "exit_reason": "target",
+   "bars_held": 43,
+   "r_net": 1.7563592299093274,
+   "win": true
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1749196800000,
+   "entry": 103445.7,
+   "stop": 102257.12076105207,
+   "target": 105822.85847789586,
+   "exit": 105822.85847789586,
+   "exit_reason": "target",
+   "bars_held": 34,
+   "r_net": 1.8239338601748465,
+   "win": true
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1749787200000,
+   "entry": 104353.6,
+   "stop": 102301.63237765613,
+   "target": 108457.53524468775,
+   "exit": 108457.53524468775,
+   "exit_reason": "target",
+   "bars_held": 87,
+   "r_net": 1.8962892333546728,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1750165200000,
+   "entry": 105301.4,
+   "stop": 106354.56867685192,
+   "target": 103195.06264629614,
+   "exit": 106354.56867685192,
+   "exit_reason": "stop",
+   "bars_held": 67,
+   "r_net": -1.2009706263857947,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1750114800000,
+   "entry": 106750.1,
+   "stop": 108663.63795847073,
+   "target": 102923.02408305855,
+   "exit": 102923.02408305855,
+   "exit_reason": "target",
+   "bars_held": 90,
+   "r_net": 1.890426462064738,
+   "win": true
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1750183200000,
+   "entry": 104359.6,
+   "stop": 102304.8614989486,
+   "target": 108469.07700210283,
+   "exit": 102304.8614989486,
+   "exit_reason": "stop",
+   "bars_held": 71,
+   "r_net": -1.1005794466756642,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1750428000000,
+   "entry": 103872.7,
+   "stop": 105765.82061824293,
+   "target": 100086.45876351414,
+   "exit": 100086.45876351414,
+   "exit_reason": "target",
+   "bars_held": 48,
+   "r_net": 1.8922629880008337,
+   "win": true
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1750449600000,
+   "entry": 103655.3,
+   "stop": 101957.25575864442,
+   "target": 107051.38848271118,
+   "exit": 101957.25575864442,
+   "exit_reason": "stop",
+   "bars_held": 25,
+   "r_net": -1.1210878672951947,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1750716000000,
+   "entry": 105485.8,
+   "stop": 102354.50215359575,
+   "target": 111748.39569280851,
+   "exit": 107047.7,
+   "exit_reason": "timeout",
+   "bars_held": 96,
+   "r_net": 0.43092882446475494,
+   "win": true
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1750698000000,
+   "entry": 102435.6,
+   "stop": 100947.20735052736,
+   "target": 105412.3852989453,
+   "exit": 105412.3852989453,
+   "exit_reason": "target",
+   "bars_held": 5,
+   "r_net": 1.860354063578204,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1750723200000,
+   "entry": 105086.4,
+   "stop": 106472.83432984322,
+   "target": 102313.53134031355,
+   "exit": 106472.83432984322,
+   "exit_reason": "stop",
+   "bars_held": 25,
+   "r_net": -1.152592322460565,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1751209200000,
+   "entry": 107686.9,
+   "stop": 108441.36197975071,
+   "target": 106177.97604049856,
+   "exit": 108441.36197975071,
+   "exit_reason": "stop",
+   "bars_held": 9,
+   "r_net": -1.2864667375964431,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1751443200000,
+   "entry": 107691.6,
+   "stop": 106490.91956305847,
+   "target": 110092.96087388307,
+   "exit": 110092.96087388307,
+   "exit_reason": "target",
+   "bars_held": 25,
+   "r_net": 1.8186157164110799,
+   "win": true
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1751436000000,
+   "entry": 106964.4,
+   "stop": 106103.6770942686,
+   "target": 108685.84581146279,
+   "exit": 108685.84581146279,
+   "exit_reason": "target",
+   "bars_held": 9,
+   "r_net": 1.7494545057701316,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1751486400000,
+   "entry": 109092.6,
+   "stop": 110602.08859225216,
+   "target": 106073.6228154957,
+   "exit": 108606.1,
+   "exit_reason": "timeout",
+   "bars_held": 96,
+   "r_net": 0.1780744163153669,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1751904000000,
+   "entry": 107932.6,
+   "stop": 108532.31196280103,
+   "target": 106733.17607439795,
+   "exit": 108532.31196280103,
+   "exit_reason": "stop",
+   "bars_held": 18,
+   "r_net": -1.3609481307522389,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1752548400000,
+   "entry": 117209.2,
+   "stop": 119139.22308070777,
+   "target": 113349.15383858445,
+   "exit": 119139.22308070777,
+   "exit_reason": "stop",
+   "bars_held": 30,
+   "r_net": -1.1224588583645436,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1752548400000,
+   "entry": 117209.2,
+   "stop": 119141.07678922865,
+   "target": 113345.44642154269,
+   "exit": 119141.07678922865,
+   "exit_reason": "stop",
+   "bars_held": 30,
+   "r_net": -1.1223423140166067,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1752577200000,
+   "entry": 117110.4,
+   "stop": 116493.6412498466,
+   "target": 118343.9175003068,
+   "exit": 116493.6412498466,
+   "exit_reason": "stop",
+   "bars_held": 1,
+   "r_net": -1.3787608058932908,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1752825600000,
+   "entry": 118637.3,
+   "stop": 121345.31787106628,
+   "target": 113221.26425786746,
+   "exit": 118257.9,
+   "exit_reason": "timeout",
+   "bars_held": 96,
+   "r_net": 0.05262328639800057,
+   "win": true
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1752886800000,
+   "entry": 118010.0,
+   "stop": 117026.1731039014,
+   "target": 119977.6537921972,
+   "exit": 117026.1731039014,
+   "exit_reason": "stop",
+   "bars_held": 45,
+   "r_net": -1.238899926436175,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1753030800000,
+   "entry": 118003.4,
+   "stop": 118722.39770498157,
+   "target": 116565.40459003684,
+   "exit": 116565.40459003684,
+   "exit_reason": "target",
+   "bars_held": 5,
+   "r_net": 1.6737558368200336,
+   "win": true
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1753056000000,
+   "entry": 117323.6,
+   "stop": 116091.26447886793,
+   "target": 119788.27104226415,
+   "exit": 116091.26447886793,
+   "exit_reason": "stop",
+   "bars_held": 25,
+   "r_net": -1.189408534020367,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1753146000000,
+   "entry": 117700.0,
+   "stop": 116466.83941480356,
+   "target": 120166.32117039288,
+   "exit": 120166.32117039288,
+   "exit_reason": "target",
+   "bars_held": 17,
+   "r_net": 1.8071083977011067,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1753236000000,
+   "entry": 119096.7,
+   "stop": 121315.78820584035,
+   "target": 114658.5235883193,
+   "exit": 118302.8,
+   "exit_reason": "timeout",
+   "bars_held": 96,
+   "r_net": 0.2507789003318445,
+   "win": true
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1753480800000,
+   "entry": 117250.0,
+   "stop": 116015.91795845133,
+   "target": 119718.16408309733,
+   "exit": 119718.16408309733,
+   "exit_reason": "target",
+   "bars_held": 48,
+   "r_net": 1.8079802184093794,
+   "win": true
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1753844400000,
+   "entry": 118106.5,
+   "stop": 117130.6953949381,
+   "target": 120058.1092101238,
+   "exit": 117130.6953949381,
+   "exit_reason": "stop",
+   "bars_held": 15,
+   "r_net": -1.2410699787382087,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1753905600000,
+   "entry": 117138.9,
+   "stop": 115417.77159699074,
+   "target": 120581.1568060185,
+   "exit": 115417.77159699074,
+   "exit_reason": "stop",
+   "bars_held": 27,
+   "r_net": -1.135118722804394,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1754186400000,
+   "entry": 113466.3,
+   "stop": 112357.68019025082,
+   "target": 115683.53961949838,
+   "exit": 115683.53961949838,
+   "exit_reason": "target",
+   "bars_held": 39,
+   "r_net": 1.7933016913423883,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1754809200000,
+   "entry": 117770.0,
+   "stop": 119003.26270772322,
+   "target": 115303.47458455357,
+   "exit": 119003.26270772322,
+   "exit_reason": "stop",
+   "bars_held": 8,
+   "r_net": -1.1919893151920877,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1754870400000,
+   "entry": 119093.1,
+   "stop": 121194.14354758931,
+   "target": 114891.0129048214,
+   "exit": 121194.14354758931,
+   "exit_reason": "stop",
+   "bars_held": 2,
+   "r_net": -1.1143656654919285,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1754938800000,
+   "entry": 119035.3,
+   "stop": 121234.2297227615,
+   "target": 114637.440554477,
+   "exit": 121234.2297227615,
+   "exit_reason": "stop",
+   "bars_held": 42,
+   "r_net": -1.1092665796617671,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1755158400000,
+   "entry": 121643.7,
+   "stop": 122767.0918075797,
+   "target": 119396.9163848406,
+   "exit": 119396.9163848406,
+   "exit_reason": "target",
+   "bars_held": 4,
+   "r_net": 1.7854349526509934,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1755147600000,
+   "entry": 122166.0,
+   "stop": 123619.47453560971,
+   "target": 119259.05092878058,
+   "exit": 119259.05092878058,
+   "exit_reason": "target",
+   "bars_held": 7,
+   "r_net": 1.8338979837527787,
+   "win": true
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1755223200000,
+   "entry": 118645.3,
+   "stop": 117670.95305897154,
+   "target": 120593.99388205692,
+   "exit": 117670.95305897154,
+   "exit_reason": "stop",
+   "bars_held": 12,
+   "r_net": -1.2425380971684694,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1755208800000,
+   "entry": 118230.1,
+   "stop": 116625.3135547593,
+   "target": 121439.67289048142,
+   "exit": 116625.3135547593,
+   "exit_reason": "stop",
+   "bars_held": 75,
+   "r_net": -1.146346832783423,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1755403200000,
+   "entry": 118023.5,
+   "stop": 116656.08289686896,
+   "target": 120758.33420626208,
+   "exit": 116656.08289686896,
+   "exit_reason": "stop",
+   "bars_held": 21,
+   "r_net": -1.1716225300674454,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1755536400000,
+   "entry": 116371.1,
+   "stop": 115592.64883186582,
+   "target": 117928.00233626837,
+   "exit": 115592.64883186582,
+   "exit_reason": "stop",
+   "bars_held": 7,
+   "r_net": -1.297981117284252,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1755871200000,
+   "entry": 115744.5,
+   "stop": 114313.948180592,
+   "target": 118605.60363881601,
+   "exit": 114313.948180592,
+   "exit_reason": "stop",
+   "bars_held": 50,
+   "r_net": -1.1608179760141708,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1755806400000,
+   "entry": 112400.0,
+   "stop": 111676.44801342445,
+   "target": 113847.1039731511,
+   "exit": 111676.44801342445,
+   "exit_reason": "stop",
+   "bars_held": 16,
+   "r_net": -1.309689493182018,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1755878400000,
+   "entry": 116105.8,
+   "stop": 117282.06772573666,
+   "target": 113753.26454852668,
+   "exit": 117282.06772573666,
+   "exit_reason": "stop",
+   "bars_held": 2,
+   "r_net": -1.1984139006955812,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1756353600000,
+   "entry": 112931.2,
+   "stop": 111518.48929419622,
+   "target": 115756.62141160756,
+   "exit": 111518.48929419622,
+   "exit_reason": "stop",
+   "bars_held": 21,
+   "r_net": -1.1588787346001452,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1756353600000,
+   "entry": 112931.2,
+   "stop": 110123.11758659252,
+   "target": 118547.36482681496,
+   "exit": 110123.11758659252,
+   "exit_reason": "stop",
+   "bars_held": 27,
+   "r_net": -1.0794329669676337,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1756429200000,
+   "entry": 111425.0,
+   "stop": 112663.90853028465,
+   "target": 108947.1829394307,
+   "exit": 108947.1829394307,
+   "exit_reason": "target",
+   "bars_held": 12,
+   "r_net": 1.822123927995889,
+   "win": true
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1756778400000,
+   "entry": 110210.1,
+   "stop": 108206.21557233571,
+   "target": 114217.86885532859,
+   "exit": 111170.1,
+   "exit_reason": "timeout",
+   "bars_held": 96,
+   "r_net": 0.368594011612208,
+   "win": true
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1756706400000,
+   "entry": 108019.9,
+   "stop": 107563.90270185904,
+   "target": 108931.8945962819,
+   "exit": 108931.8945962819,
+   "exit_reason": "target",
+   "bars_held": 1,
+   "r_net": 1.5242257015978826,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1756814400000,
+   "entry": 108749.6,
+   "stop": 109740.35033893754,
+   "target": 106768.09932212494,
+   "exit": 109740.35033893754,
+   "exit_reason": "stop",
+   "bars_held": 1,
+   "r_net": -1.2205297760212954,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1756962000000,
+   "entry": 110613.3,
+   "stop": 112040.31315473918,
+   "target": 107759.27369052164,
+   "exit": 112040.31315473918,
+   "exit_reason": "stop",
+   "bars_held": 26,
+   "r_net": -1.1560277229507485,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1757059200000,
+   "entry": 112589.0,
+   "stop": 113736.47934685423,
+   "target": 110294.04130629153,
+   "exit": 110294.04130629153,
+   "exit_reason": "target",
+   "bars_held": 7,
+   "r_net": 1.8057629168513518,
+   "win": true
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1757188800000,
+   "entry": 110121.0,
+   "stop": 109577.0875537518,
+   "target": 111208.8248924964,
+   "exit": 111208.8248924964,
+   "exit_reason": "target",
+   "bars_held": 12,
+   "r_net": 1.5930782124601612,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1757412000000,
+   "entry": 112690.2,
+   "stop": 113655.30781465424,
+   "target": 110759.98437069151,
+   "exit": 110759.98437069151,
+   "exit_reason": "target",
+   "bars_held": 5,
+   "r_net": 1.7684712723513332,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1757707200000,
+   "entry": 116088.3,
+   "stop": 117171.5591681688,
+   "target": 113921.78166366242,
+   "exit": 116783.7,
+   "exit_reason": "timeout",
+   "bars_held": 96,
+   "r_net": -0.8569251267627773,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1757998800000,
+   "entry": 115893.3,
+   "stop": 114833.48855887356,
+   "target": 118012.92288225288,
+   "exit": 114833.48855887356,
+   "exit_reason": "stop",
+   "bars_held": 8,
+   "r_net": -1.217705508362525,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1758081600000,
+   "entry": 116264.8,
+   "stop": 117152.26408794569,
+   "target": 114489.87182410863,
+   "exit": 117152.26408794569,
+   "exit_reason": "stop",
+   "bars_held": 1,
+   "r_net": -1.2630157853803956,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1758106800000,
+   "entry": 116200.1,
+   "stop": 117148.72697748421,
+   "target": 114302.84604503159,
+   "exit": 117148.72697748421,
+   "exit_reason": "stop",
+   "bars_held": 16,
+   "r_net": -1.2459858643239488,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1758272400000,
+   "entry": 116437.7,
+   "stop": 117658.30885578004,
+   "target": 113996.48228843992,
+   "exit": 113996.48228843992,
+   "exit_reason": "target",
+   "bars_held": 68,
+   "r_net": 1.8112137387851774,
+   "win": true
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1758528000000,
+   "entry": 112568.3,
+   "stop": 111264.27481359073,
+   "target": 115176.35037281855,
+   "exit": 111264.27481359073,
+   "exit_reason": "stop",
+   "bars_held": 44,
+   "r_net": -1.1716474322324308,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1758762000000,
+   "entry": 112615.7,
+   "stop": 113498.8158459491,
+   "target": 110849.4683081018,
+   "exit": 110849.4683081018,
+   "exit_reason": "target",
+   "bars_held": 12,
+   "r_net": 1.7469582622335047,
+   "win": true
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1758834000000,
+   "entry": 109360.8,
+   "stop": 108291.45973697396,
+   "target": 111499.48052605208,
+   "exit": 111499.48052605208,
+   "exit_reason": "target",
+   "bars_held": 73,
+   "r_net": 1.7934611758645926,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1759222800000,
+   "entry": 112743.1,
+   "stop": 114113.95986239523,
+   "target": 110001.38027520955,
+   "exit": 114113.95986239523,
+   "exit_reason": "stop",
+   "bars_held": 10,
+   "r_net": -1.1654852301722636,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1759651200000,
+   "entry": 124580.9,
+   "stop": 126170.33158953812,
+   "target": 121402.03682092373,
+   "exit": 126170.33158953812,
+   "exit_reason": "stop",
+   "bars_held": 34,
+   "r_net": -1.1577615754210564,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1759917600000,
+   "entry": 122885.7,
+   "stop": 121812.61679750432,
+   "target": 125031.86640499135,
+   "exit": 121812.61679750432,
+   "exit_reason": "stop",
+   "bars_held": 3,
+   "r_net": -1.2280329393176472,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1759881600000,
+   "entry": 121868.9,
+   "stop": 121088.51435601138,
+   "target": 123429.67128797722,
+   "exit": 121088.51435601138,
+   "exit_reason": "stop",
+   "bars_held": 4,
+   "r_net": -1.311329938252358,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1760281200000,
+   "entry": 113119.0,
+   "stop": 111946.16408107722,
+   "target": 115464.67183784556,
+   "exit": 115464.67183784556,
+   "exit_reason": "target",
+   "bars_held": 6,
+   "r_net": 1.805101746842994,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1761062400000,
+   "entry": 112507.2,
+   "stop": 114009.33708319895,
+   "target": 109502.9258336021,
+   "exit": 109502.9258336021,
+   "exit_reason": "target",
+   "bars_held": 6,
+   "r_net": 1.8522038179359768,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1761760800000,
+   "entry": 110743.0,
+   "stop": 112364.56437916527,
+   "target": 107499.87124166946,
+   "exit": 107499.87124166946,
+   "exit_reason": "target",
+   "bars_held": 19,
+   "r_net": 1.8654121451816774,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1761681600000,
+   "entry": 112744.6,
+   "stop": 113848.6687092249,
+   "target": 110536.46258155021,
+   "exit": 110536.46258155021,
+   "exit_reason": "target",
+   "bars_held": 22,
+   "r_net": 1.7977652471119305,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1761681600000,
+   "entry": 112744.6,
+   "stop": 114232.63156560718,
+   "target": 109768.53686878565,
+   "exit": 109768.53686878565,
+   "exit_reason": "target",
+   "bars_held": 22,
+   "r_net": 1.8504647737240854,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1762275600000,
+   "entry": 101074.8,
+   "stop": 113005.97373442596,
+   "target": 77212.45253114808,
+   "exit": 101945.1,
+   "exit_reason": "timeout",
+   "bars_held": 96,
+   "r_net": -0.0899592884900379,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1762880400000,
+   "entry": 103294.0,
+   "stop": 104403.33152941495,
+   "target": 101075.3369411701,
+   "exit": 104403.33152941495,
+   "exit_reason": "stop",
+   "bars_held": 16,
+   "r_net": -1.187227466291289,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1763010000000,
+   "entry": 103097.5,
+   "stop": 102029.86852561026,
+   "target": 105232.76294877948,
+   "exit": 102029.86852561026,
+   "exit_reason": "stop",
+   "bars_held": 9,
+   "r_net": -1.192133122192612,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1762977600000,
+   "entry": 101494.9,
+   "stop": 100339.83863092381,
+   "target": 103805.02273815236,
+   "exit": 103805.02273815236,
+   "exit_reason": "target",
+   "bars_held": 11,
+   "r_net": 1.82226059304335,
+   "win": true
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1763164800000,
+   "entry": 95120.0,
+   "stop": 93465.6318438425,
+   "target": 98428.73631231501,
+   "exit": 93465.6318438425,
+   "exit_reason": "stop",
+   "bars_held": 45,
+   "r_net": -1.1139925421931758,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1763395200000,
+   "entry": 94267.0,
+   "stop": 93296.51402148561,
+   "target": 96207.97195702879,
+   "exit": 93296.51402148561,
+   "exit_reason": "stop",
+   "bars_held": 1,
+   "r_net": -1.1932676186714128,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1763478000000,
+   "entry": 92851.4,
+   "stop": 91203.05382842707,
+   "target": 96148.09234314584,
+   "exit": 91203.05382842707,
+   "exit_reason": "stop",
+   "bars_held": 13,
+   "r_net": -1.111660072988663,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1763586000000,
+   "entry": 90553.9,
+   "stop": 88606.28450582,
+   "target": 94449.13098835998,
+   "exit": 88606.28450582,
+   "exit_reason": "stop",
+   "bars_held": 19,
+   "r_net": -1.0919895046230546,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1763928000000,
+   "entry": 87435.0,
+   "stop": 85852.77535153103,
+   "target": 90599.44929693794,
+   "exit": 85852.77535153103,
+   "exit_reason": "stop",
+   "bars_held": 13,
+   "r_net": -1.1095216001843995,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1763733600000,
+   "entry": 84801.0,
+   "stop": 83150.1019612691,
+   "target": 88102.7960774618,
+   "exit": 83150.1019612691,
+   "exit_reason": "stop",
+   "bars_held": 1,
+   "r_net": -1.101733176744437,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1764057600000,
+   "entry": 86978.6,
+   "stop": 88522.42085608323,
+   "target": 83890.95828783355,
+   "exit": 88522.42085608323,
+   "exit_reason": "stop",
+   "bars_held": 33,
+   "r_net": -1.1136796540638323,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1764345600000,
+   "entry": 90880.1,
+   "stop": 93404.78287183285,
+   "target": 85830.73425633431,
+   "exit": 85830.73425633431,
+   "exit_reason": "target",
+   "bars_held": 60,
+   "r_net": 1.9300067203577025,
+   "win": true
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1764694800000,
+   "entry": 91417.5,
+   "stop": 89852.24140243295,
+   "target": 94548.0171951341,
+   "exit": 89852.24140243295,
+   "exit_reason": "stop",
+   "bars_held": 71,
+   "r_net": -1.1158081748818918,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1764651600000,
+   "entry": 86968.7,
+   "stop": 85769.90036740393,
+   "target": 89366.29926519214,
+   "exit": 89366.29926519214,
+   "exit_reason": "target",
+   "bars_held": 10,
+   "r_net": 1.8529070292728325,
+   "win": true
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1764608400000,
+   "entry": 84902.8,
+   "stop": 83464.90391258935,
+   "target": 87778.59217482131,
+   "exit": 87778.59217482131,
+   "exit_reason": "target",
+   "bars_held": 20,
+   "r_net": 1.8799069044789092,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1764925200000,
+   "entry": 91086.4,
+   "stop": 92323.93210363164,
+   "target": 88611.3357927367,
+   "exit": 88611.3357927367,
+   "exit_reason": "target",
+   "bars_held": 7,
+   "r_net": 1.854793475445699,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1764806400000,
+   "entry": 93013.9,
+   "stop": 94567.29402821128,
+   "target": 89907.11194357742,
+   "exit": 89907.11194357742,
+   "exit_reason": "target",
+   "bars_held": 38,
+   "r_net": 1.8822442930631034,
+   "win": true
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1765188000000,
+   "entry": 92085.8,
+   "stop": 90478.92057194744,
+   "target": 95299.55885610513,
+   "exit": 90478.92057194744,
+   "exit_reason": "stop",
+   "bars_held": 5,
+   "r_net": -1.1136144488408728,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1765144800000,
+   "entry": 89551.8,
+   "stop": 90558.28596911691,
+   "target": 87538.82806176618,
+   "exit": 90558.28596911691,
+   "exit_reason": "stop",
+   "bars_held": 2,
+   "r_net": -1.1789494255216841,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1765375200000,
+   "entry": 91794.0,
+   "stop": 92604.60659158106,
+   "target": 90172.78681683788,
+   "exit": 92604.60659158106,
+   "exit_reason": "stop",
+   "bars_held": 4,
+   "r_net": -1.2274822441696454,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1765771200000,
+   "entry": 89631.2,
+   "stop": 87727.42693911794,
+   "target": 93438.74612176411,
+   "exit": 87727.42693911794,
+   "exit_reason": "stop",
+   "bars_held": 11,
+   "r_net": -1.0931616433614915,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1765771200000,
+   "entry": 89631.2,
+   "stop": 87728.4035863238,
+   "target": 93436.7928273524,
+   "exit": 87728.4035863238,
+   "exit_reason": "stop",
+   "bars_held": 11,
+   "r_net": -1.0932099736532805,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1765980000000,
+   "entry": 89633.9,
+   "stop": 87684.905147087,
+   "target": 93531.88970582598,
+   "exit": 87684.905147087,
+   "exit_reason": "stop",
+   "bars_held": 1,
+   "r_net": -1.0909796169456558,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1766113200000,
+   "entry": 86863.1,
+   "stop": 84689.05976228305,
+   "target": 91211.18047543391,
+   "exit": 88128.2,
+   "exit_reason": "timeout",
+   "bars_held": 96,
+   "r_net": 0.5014206642029608,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1766498400000,
+   "entry": 86837.3,
+   "stop": 90617.1305481214,
+   "target": 79277.63890375722,
+   "exit": 87500.7,
+   "exit_reason": "timeout",
+   "bars_held": 96,
+   "r_net": -0.22163374504085806,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1766498400000,
+   "entry": 86837.3,
+   "stop": 90617.47300896987,
+   "target": 79276.95398206027,
+   "exit": 87500.7,
+   "exit_reason": "timeout",
+   "bars_held": 96,
+   "r_net": -0.2216136663618669,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1766703600000,
+   "entry": 87182.8,
+   "stop": 90592.54165356605,
+   "target": 80363.31669286791,
+   "exit": 87203.3,
+   "exit_reason": "timeout",
+   "bars_held": 96,
+   "r_net": -0.05715567916888046,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1766761200000,
+   "entry": 87100.0,
+   "stop": 90621.65117087631,
+   "target": 80056.69765824737,
+   "exit": 88966.8,
+   "exit_reason": "timeout",
+   "bars_held": 96,
+   "r_net": -0.5800877772603652,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1767038400000,
+   "entry": 87182.9,
+   "stop": 90553.56656195805,
+   "target": 80441.56687608387,
+   "exit": 90553.56656195805,
+   "exit_reason": "stop",
+   "bars_held": 92,
+   "r_net": -1.052730361575339,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1767589200000,
+   "entry": 92323.2,
+   "stop": 93747.18085186469,
+   "target": 89475.23829627062,
+   "exit": 93747.18085186469,
+   "exit_reason": "stop",
+   "bars_held": 10,
+   "r_net": -1.130669159355761,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1767715200000,
+   "entry": 92651.3,
+   "stop": 94148.32741674442,
+   "target": 89657.24516651117,
+   "exit": 89657.24516651117,
+   "exit_reason": "target",
+   "bars_held": 39,
+   "r_net": 1.8782196350398432,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1767715200000,
+   "entry": 92651.3,
+   "stop": 94155.68795840553,
+   "target": 89642.52408318895,
+   "exit": 89642.52408318895,
+   "exit_reason": "target",
+   "bars_held": 39,
+   "r_net": 1.8788252570989854,
+   "win": true
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1767891600000,
+   "entry": 91320.0,
+   "stop": 90524.40113505053,
+   "target": 92911.19772989894,
+   "exit": 90524.40113505053,
+   "exit_reason": "stop",
+   "bars_held": 3,
+   "r_net": -1.2285629217766496,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1768158000000,
+   "entry": 90644.7,
+   "stop": 90973.96273415354,
+   "target": 89986.17453169292,
+   "exit": 90973.96273415354,
+   "exit_reason": "stop",
+   "bars_held": 4,
+   "r_net": -1.5515919170174306,
+   "win": false
+  }
+ ],
+ "loss_breakdown": {
+  "all": {
+   "n": 96,
+   "avg_r_net": -1.1113,
+   "avg_cost_r": 0.1628
+  },
+  "stop": {
+   "n": 89,
+   "avg_r_net": -1.1695,
+   "avg_cost_r": 0.1695
+  },
+  "timeout": {
+   "n": 7,
+   "avg_r_net": -0.3712,
+   "avg_cost_r": 0.0775
+  }
+ },
+ "by_killed_divs": {
+  "divs>0": {
+   "n": 119,
+   "wins": 44,
+   "win_rate": 0.3697,
+   "wilson95": [
+    0.2884,
+    0.4593
+   ],
+   "net_r": -8.42,
+   "expectancy_r": -0.0708,
+   "avg_win_r": 1.655,
+   "avg_loss_r": 1.083,
+   "breakeven_wr": 0.3956
+  },
+  "divs=0": {
+   "n": 35,
+   "wins": 14,
+   "win_rate": 0.4,
+   "wilson95": [
+    0.2555,
+    0.5643
+   ],
+   "net_r": -3.2,
+   "expectancy_r": -0.0915,
+   "avg_win_r": 1.588,
+   "avg_loss_r": 1.211,
+   "breakeven_wr": 0.4327
+  }
+ },
+ "by_direction": {
+  "long": {
+   "n": 77,
+   "wins": 30,
+   "win_rate": 0.3896,
+   "wilson95": [
+    0.2884,
+    0.5013
+   ],
+   "net_r": -5.98,
+   "expectancy_r": -0.0777,
+   "avg_win_r": 1.622,
+   "avg_loss_r": 1.163,
+   "breakeven_wr": 0.4175
+  },
+  "short": {
+   "n": 77,
+   "wins": 28,
+   "win_rate": 0.3636,
+   "wilson95": [
+    0.2651,
+    0.4752
+   ],
+   "net_r": -5.64,
+   "expectancy_r": -0.0732,
+   "avg_win_r": 1.657,
+   "avg_loss_r": 1.062,
+   "breakeven_wr": 0.3906
+  }
+ },
+ "by_halfyear": {
+  "2025-H1": {
+   "n": 64,
+   "wins": 24,
+   "win_rate": 0.375,
+   "wilson95": [
+    0.2667,
+    0.4975
+   ],
+   "net_r": -4.03,
+   "expectancy_r": -0.063,
+   "avg_win_r": 1.726,
+   "avg_loss_r": 1.136,
+   "breakeven_wr": 0.397
+  },
+  "2025-H2": {
+   "n": 85,
+   "wins": 32,
+   "win_rate": 0.3765,
+   "wilson95": [
+    0.2809,
+    0.4827
+   ],
+   "net_r": -7.44,
+   "expectancy_r": -0.0875,
+   "avg_win_r": 1.559,
+   "avg_loss_r": 1.081,
+   "breakeven_wr": 0.4096
+  },
+  "2026-H1": {
+   "n": 5,
+   "wins": 2,
+   "win_rate": 0.4,
+   "wilson95": [
+    0.1176,
+    0.7693
+   ],
+   "net_r": -0.15,
+   "expectancy_r": -0.0308,
+   "avg_win_r": 1.879,
+   "avg_loss_r": 1.304,
+   "breakeven_wr": 0.4097
+  }
+ },
+ "cost_sensitivity": {
+  "2+5": {
+   "baseline": {
+    "n": 154,
+    "wins": 58,
+    "win_rate": 0.3766,
+    "wilson95": [
+     0.304,
+     0.4553
+    ],
+    "net_r": -4.01,
+    "expectancy_r": -0.026,
+    "avg_win_r": 1.689,
+    "avg_loss_r": 1.062,
+    "breakeven_wr": 0.3861
+   },
+   "loss_breakdown": {
+    "all": {
+     "n": 96,
+     "avg_r_net": -1.0625,
+     "avg_cost_r": 0.114
+    },
+    "stop": {
+     "n": 89,
+     "avg_r_net": -1.1186,
+     "avg_cost_r": 0.1186
+    },
+    "timeout": {
+     "n": 7,
+     "avg_r_net": -0.348,
+     "avg_cost_r": 0.0543
+    }
+   }
+  },
+  "5+5": {
+   "baseline": {
+    "n": 154,
+    "wins": 58,
+    "win_rate": 0.3766,
+    "wilson95": [
+     0.304,
+     0.4553
+    ],
+    "net_r": -11.62,
+    "expectancy_r": -0.0755,
+    "avg_win_r": 1.639,
+    "avg_loss_r": 1.111,
+    "breakeven_wr": 0.4041
+   },
+   "loss_breakdown": {
+    "all": {
+     "n": 96,
+     "avg_r_net": -1.1113,
+     "avg_cost_r": 0.1628
+    },
+    "stop": {
+     "n": 89,
+     "avg_r_net": -1.1695,
+     "avg_cost_r": 0.1695
+    },
+    "timeout": {
+     "n": 7,
+     "avg_r_net": -0.3712,
+     "avg_cost_r": 0.0775
+    }
+   }
+  },
+  "10+10": {
+   "baseline": {
+    "n": 154,
+    "wins": 57,
+    "win_rate": 0.3701,
+    "wilson95": [
+     0.2979,
+     0.4487
+    ],
+    "net_r": -37.01,
+    "expectancy_r": -0.2403,
+    "avg_win_r": 1.497,
+    "avg_loss_r": 1.261,
+    "breakeven_wr": 0.4572
+   },
+   "loss_breakdown": {
+    "all": {
+     "n": 97,
+     "avg_r_net": -1.2613,
+     "avg_cost_r": 0.324
+    },
+    "stop": {
+     "n": 89,
+     "avg_r_net": -1.339,
+     "avg_cost_r": 0.339
+    },
+    "timeout": {
+     "n": 8,
+     "avg_r_net": -0.397,
+     "avg_cost_r": 0.1576
+    }
+   }
+  }
+ },
+ "config": {
+  "fee_bps": 5.0,
+  "slippage_bps": 5.0,
+  "train_fraction": 0.65,
+  "validity_h1": 24,
+  "max_hold_bars": 96,
+  "stop_atr_mult": 0.25,
+  "pullback_vol_ratio": 1.0,
+  "pullback_delta_ratio": 1.0,
+  "require_pullback_filter": true,
+  "baseline_target_r": 2.0,
+  "strategy": "v2",
+  "setup_tf": "4h",
+  "exec_tf": "1h",
+  "m1_stop_atr_mult": 0.1,
+  "entry_max_zone_dist": 1.0,
+  "m1_timeout_bars": 5760
+ },
+ "run_meta": {
+  "script": "backtest_seeker.py",
+  "argv": [
+   "backtest_seeker.py",
+   "--db",
+   "C:\\edgerunner\\edgerunner.db",
+   "--mode",
+   "diagnose",
+   "--json-out",
+   "C:\\edgerunner\\diag_seeker_v2fix.json",
+   "--md-out",
+   "C:\\edgerunner\\diag_seeker_v2fix.md"
+  ],
+  "git_commit": "7f7086ce646d738d393161d301e1efbf224ff846",
+  "timestamp": 1785141801.634983,
+  "db_path": "C:\\edgerunner\\edgerunner.db",
+  "table_rows": {
+   "candles_4h": 3300,
+   "candles_1h": 13200
+  },
+  "train_fraction": 0.65
+ },
+ "range": {
+  "since": null,
+  "until": null
+ }
+}

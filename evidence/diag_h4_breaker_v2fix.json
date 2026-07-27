@@ -1,0 +1,897 @@
+{
+ "mode": "diagnose",
+ "strategy": "v1",
+ "train_fraction": 0.65,
+ "h1_candles_total": 3300,
+ "train_h1_candles": 2145,
+ "setups_train": 236,
+ "outcomes": {
+  "entered": 43,
+  "invalid": 114,
+  "missed/no_pullback": 55,
+  "skipped": 3,
+  "missed/no_exit_close": 20,
+  "missed/filter_never_passed": 1
+ },
+ "entered": 43,
+ "pullback_depth_pct_impulse": {
+  "n": 43,
+  "mean": 1.8721,
+  "p25": 1.3198,
+  "p50": 1.5559,
+  "p75": 2.1376,
+  "p90": 2.6322
+ },
+ "pullback_depth_pct_zone": {
+  "n": 43,
+  "mean": 110.9014,
+  "p25": 0.5961,
+  "p50": 1.5005,
+  "p75": 3.9717,
+  "p90": 13.0545
+ },
+ "targets": {
+  "1.5R": {
+   "n": 43,
+   "wins": 15,
+   "win_rate": 0.3488,
+   "wilson95": [
+    0.2242,
+    0.4983
+   ],
+   "net_r": -17.31,
+   "expectancy_r": -0.4027,
+   "avg_win_r": 1.213,
+   "avg_loss_r": 1.268,
+   "breakeven_wr": 0.5111
+  },
+  "2R": {
+   "n": 43,
+   "wins": 12,
+   "win_rate": 0.2791,
+   "wilson95": [
+    0.1675,
+    0.4269
+   ],
+   "net_r": -20.25,
+   "expectancy_r": -0.471,
+   "avg_win_r": 1.577,
+   "avg_loss_r": 1.264,
+   "breakeven_wr": 0.4449
+  },
+  "3R": {
+   "n": 43,
+   "wins": 8,
+   "win_rate": 0.186,
+   "wilson95": [
+    0.0974,
+    0.3262
+   ],
+   "net_r": -26.9,
+   "expectancy_r": -0.6256,
+   "avg_win_r": 2.157,
+   "avg_loss_r": 1.262,
+   "breakeven_wr": 0.369
+  },
+  "post_break_extreme": {
+   "n": 43,
+   "wins": 14,
+   "win_rate": 0.3256,
+   "wilson95": [
+    0.2049,
+    0.4748
+   ],
+   "net_r": -24.29,
+   "expectancy_r": -0.565,
+   "avg_win_r": 0.893,
+   "avg_loss_r": 1.269,
+   "breakeven_wr": 0.5869
+  }
+ },
+ "stop_variants": {
+  "breaker": {
+   "n": 43,
+   "wins": 12,
+   "win_rate": 0.2791,
+   "wilson95": [
+    0.1675,
+    0.4269
+   ],
+   "net_r": -20.25,
+   "expectancy_r": -0.471,
+   "avg_win_r": 1.577,
+   "avg_loss_r": 1.264,
+   "breakeven_wr": 0.4449
+  },
+  "pullback": {
+   "n": 43,
+   "wins": 12,
+   "win_rate": 0.2791,
+   "wilson95": [
+    0.1675,
+    0.4269
+   ],
+   "net_r": -18.52,
+   "expectancy_r": -0.4306,
+   "avg_win_r": 1.611,
+   "avg_loss_r": 1.221,
+   "breakeven_wr": 0.4311
+  }
+ },
+ "missed": {
+  "by_reason": {
+   "no_pullback": 55,
+   "no_exit_close": 20,
+   "filter_never_passed": 1
+  },
+  "invalid_before_pullback": 0,
+  "invalid_during_pullback": 114,
+  "missed_total": 190,
+  "tracked_total": 233,
+  "missed_quote": 0.8155
+ },
+ "baseline_trades": [
+  {
+   "direction": "short",
+   "entry_ts": 1738224000000,
+   "entry": 105010.0,
+   "stop": 105529.63568223432,
+   "target": 103970.72863553136,
+   "exit": 105529.63568223432,
+   "exit_reason": "stop",
+   "bars_held": 6,
+   "r_net": -1.4051677798124662,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1737990000000,
+   "entry": 101070.8,
+   "stop": 101763.45296070204,
+   "target": 99685.49407859593,
+   "exit": 99685.49407859593,
+   "exit_reason": "target",
+   "bars_held": 1,
+   "r_net": 1.7101632340167707,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1740063600000,
+   "entry": 96870.5,
+   "stop": 97462.42451116086,
+   "target": 95686.65097767828,
+   "exit": 97462.42451116086,
+   "exit_reason": "stop",
+   "bars_held": 1,
+   "r_net": -1.3283069392244524,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1740765600000,
+   "entry": 84391.3,
+   "stop": 85407.85551295201,
+   "target": 82358.18897409599,
+   "exit": 85407.85551295201,
+   "exit_reason": "stop",
+   "bars_held": 8,
+   "r_net": -1.1670338248620147,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1741039200000,
+   "entry": 86593.3,
+   "stop": 84563.53202653906,
+   "target": 90652.83594692188,
+   "exit": 84563.53202653906,
+   "exit_reason": "stop",
+   "bars_held": 3,
+   "r_net": -1.0843233484143993,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1741579200000,
+   "entry": 82585.8,
+   "stop": 83999.77360202825,
+   "target": 79757.85279594352,
+   "exit": 83999.77360202825,
+   "exit_reason": "stop",
+   "bars_held": 5,
+   "r_net": -1.1178137790995968,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1742230800000,
+   "entry": 84164.5,
+   "stop": 84600.54856152536,
+   "target": 83292.40287694929,
+   "exit": 84600.54856152536,
+   "exit_reason": "stop",
+   "bars_held": 2,
+   "r_net": -1.387032691889071,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1742518800000,
+   "entry": 84733.5,
+   "stop": 83190.00547134632,
+   "target": 87820.48905730736,
+   "exit": 83190.00547134632,
+   "exit_reason": "stop",
+   "bars_held": 12,
+   "r_net": -1.108794363928071,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1743508800000,
+   "entry": 83569.7,
+   "stop": 84176.97788274476,
+   "target": 82355.14423451047,
+   "exit": 84176.97788274476,
+   "exit_reason": "stop",
+   "bars_held": 2,
+   "r_net": -1.2762272143430593,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1744225200000,
+   "entry": 82291.4,
+   "stop": 82849.74979767746,
+   "target": 81174.70040464506,
+   "exit": 82849.74979767746,
+   "exit_reason": "stop",
+   "bars_held": 1,
+   "r_net": -1.2957664719940678,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1744570800000,
+   "entry": 83949.9,
+   "stop": 83006.90146817744,
+   "target": 85835.8970636451,
+   "exit": 83006.90146817744,
+   "exit_reason": "stop",
+   "bars_held": 2,
+   "r_net": -1.1770488456068866,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1745262000000,
+   "entry": 87369.1,
+   "stop": 86530.15676808414,
+   "target": 89046.98646383174,
+   "exit": 89046.98646383174,
+   "exit_reason": "target",
+   "bars_held": 17,
+   "r_net": 1.7897163005166037,
+   "win": true
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1745618400000,
+   "entry": 94790.7,
+   "stop": 93564.34223239415,
+   "target": 97243.4155352117,
+   "exit": 93564.34223239415,
+   "exit_reason": "stop",
+   "bars_held": 39,
+   "r_net": -1.1535889829279513,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1747137600000,
+   "entry": 103636.6,
+   "stop": 104954.1087718525,
+   "target": 101001.58245629503,
+   "exit": 102889.9,
+   "exit_reason": "timeout",
+   "bars_held": 96,
+   "r_net": 0.4099961317452983,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1747094400000,
+   "entry": 102230.7,
+   "stop": 103393.14385957732,
+   "target": 99905.81228084535,
+   "exit": 103393.14385957732,
+   "exit_reason": "stop",
+   "bars_held": 9,
+   "r_net": -1.1768892683852517,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1749016800000,
+   "entry": 105249.8,
+   "stop": 104699.95276140746,
+   "target": 106349.49447718509,
+   "exit": 104699.95276140746,
+   "exit_reason": "stop",
+   "bars_held": 7,
+   "r_net": -1.3818328765255132,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1749427200000,
+   "entry": 105651.4,
+   "stop": 105231.75395774574,
+   "target": 106490.69208450851,
+   "exit": 106490.69208450851,
+   "exit_reason": "target",
+   "bars_held": 9,
+   "r_net": 1.494473745195092,
+   "win": true
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1749567600000,
+   "entry": 108975.3,
+   "stop": 108120.25111746212,
+   "target": 110685.39776507577,
+   "exit": 108120.25111746212,
+   "exit_reason": "stop",
+   "bars_held": 31,
+   "r_net": -1.2538984092618066,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1751216400000,
+   "entry": 107485.4,
+   "stop": 107160.13802024929,
+   "target": 108135.92395950141,
+   "exit": 108135.92395950141,
+   "exit_reason": "target",
+   "bars_held": 5,
+   "r_net": 1.337084143296567,
+   "win": true
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1751896800000,
+   "entry": 108158.1,
+   "stop": 107820.48803719897,
+   "target": 108833.32392560208,
+   "exit": 107820.48803719897,
+   "exit_reason": "stop",
+   "bars_held": 2,
+   "r_net": -1.6397243339521745,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1752876000000,
+   "entry": 117663.0,
+   "stop": 118440.1268960986,
+   "target": 116108.74620780279,
+   "exit": 118440.1268960986,
+   "exit_reason": "stop",
+   "bars_held": 12,
+   "r_net": -1.3038154104321744,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1753171200000,
+   "entry": 118257.9,
+   "stop": 118703.06058519644,
+   "target": 117367.57882960711,
+   "exit": 118703.06058519644,
+   "exit_reason": "stop",
+   "bars_held": 2,
+   "r_net": -1.5323044502707281,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1753585200000,
+   "entry": 118162.0,
+   "stop": 118764.98204154868,
+   "target": 116956.03591690265,
+   "exit": 118764.98204154868,
+   "exit_reason": "stop",
+   "bars_held": 13,
+   "r_net": -1.3929254367725805,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1753930800000,
+   "entry": 118429.0,
+   "stop": 119307.3046050619,
+   "target": 116672.3907898762,
+   "exit": 116672.3907898762,
+   "exit_reason": "target",
+   "bars_held": 17,
+   "r_net": 1.7323236273214069,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1754175600000,
+   "entry": 112508.8,
+   "stop": 113691.21980974918,
+   "target": 110143.96038050165,
+   "exit": 113691.21980974918,
+   "exit_reason": "stop",
+   "bars_held": 4,
+   "r_net": -1.1913026303726433,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1756357200000,
+   "entry": 112807.9,
+   "stop": 113354.41070580378,
+   "target": 111714.87858839243,
+   "exit": 113354.41070580378,
+   "exit_reason": "stop",
+   "bars_held": 8,
+   "r_net": -1.4138296071861347,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1756231200000,
+   "entry": 110650.0,
+   "stop": 111410.88241340748,
+   "target": 109128.23517318504,
+   "exit": 111410.88241340748,
+   "exit_reason": "stop",
+   "bars_held": 3,
+   "r_net": -1.2918465172810794,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1756810800000,
+   "entry": 109698.6,
+   "stop": 111842.98442766428,
+   "target": 105409.83114467145,
+   "exit": 111842.98442766428,
+   "exit_reason": "stop",
+   "bars_held": 26,
+   "r_net": -1.1033124385579347,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1758142800000,
+   "entry": 115986.8,
+   "stop": 115336.3359120543,
+   "target": 117287.7281758914,
+   "exit": 117287.7281758914,
+   "exit_reason": "target",
+   "bars_held": 6,
+   "r_net": 1.6413721641226988,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1758859200000,
+   "entry": 109300.0,
+   "stop": 109916.58202995275,
+   "target": 108066.83594009449,
+   "exit": 109916.58202995275,
+   "exit_reason": "stop",
+   "bars_held": 13,
+   "r_net": -1.3555351459833151,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1759384800000,
+   "entry": 118600.0,
+   "stop": 118064.73125675069,
+   "target": 119670.53748649862,
+   "exit": 119670.53748649862,
+   "exit_reason": "target",
+   "bars_held": 7,
+   "r_net": 1.554858114747959,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1760158800000,
+   "entry": 112338.3,
+   "stop": 113969.23591892279,
+   "target": 109076.42816215444,
+   "exit": 113969.23591892279,
+   "exit_reason": "stop",
+   "bars_held": 35,
+   "r_net": -1.1387593058030039,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1760972400000,
+   "entry": 111079.1,
+   "stop": 112438.22632046201,
+   "target": 108360.847359076,
+   "exit": 108360.847359076,
+   "exit_reason": "target",
+   "bars_held": 13,
+   "r_net": 1.838543375950172,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1760900400000,
+   "entry": 108850.0,
+   "stop": 109668.14520938451,
+   "target": 107213.70958123097,
+   "exit": 109668.14520938451,
+   "exit_reason": "stop",
+   "bars_held": 8,
+   "r_net": -1.2670896837173584,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1761627600000,
+   "entry": 113561.9,
+   "stop": 112507.36843439282,
+   "target": 115670.96313121435,
+   "exit": 115670.96313121435,
+   "exit_reason": "target",
+   "bars_held": 9,
+   "r_net": 1.7826211461017667,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1761894000000,
+   "entry": 109400.1,
+   "stop": 110149.94141392551,
+   "target": 107900.417172149,
+   "exit": 110149.94141392551,
+   "exit_reason": "stop",
+   "bars_held": 2,
+   "r_net": -1.292795299561464,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1763737200000,
+   "entry": 82905.1,
+   "stop": 85216.9980387309,
+   "target": 78281.30392253821,
+   "exit": 85216.9980387309,
+   "exit_reason": "stop",
+   "bars_held": 2,
+   "r_net": -1.0727203774657033,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1765141200000,
+   "entry": 90189.2,
+   "stop": 91788.77942805256,
+   "target": 86990.04114389488,
+   "exit": 91788.77942805256,
+   "exit_reason": "stop",
+   "bars_held": 10,
+   "r_net": -1.1137661414223023,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1765148400000,
+   "entry": 90345.4,
+   "stop": 88764.21403088309,
+   "target": 93507.77193823381,
+   "exit": 93507.77193823381,
+   "exit_reason": "target",
+   "bars_held": 41,
+   "r_net": 1.8837245108866532,
+   "win": true
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1766160000000,
+   "entry": 87956.6,
+   "stop": 88883.94023771695,
+   "target": 86101.91952456612,
+   "exit": 88883.94023771695,
+   "exit_reason": "stop",
+   "bars_held": 41,
+   "r_net": -1.1906965027993195,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1766422800000,
+   "entry": 89271.0,
+   "stop": 88795.82699103013,
+   "target": 90221.34601793974,
+   "exit": 88795.82699103013,
+   "exit_reason": "stop",
+   "bars_held": 2,
+   "r_net": -1.3747410387998602,
+   "win": false
+  },
+  {
+   "direction": "short",
+   "entry_ts": 1766520000000,
+   "entry": 87674.3,
+   "stop": 88626.60397982322,
+   "target": 85769.69204035356,
+   "exit": 88626.60397982322,
+   "exit_reason": "stop",
+   "bars_held": 54,
+   "r_net": -1.185130911678572,
+   "win": false
+  },
+  {
+   "direction": "long",
+   "entry_ts": 1767722400000,
+   "entry": 92006.4,
+   "stop": 91276.61914813532,
+   "target": 93465.96170372935,
+   "exit": 93465.96170372935,
+   "exit_reason": "target",
+   "bars_held": 3,
+   "r_net": 1.7458519756584396,
+   "win": true
+  }
+ ],
+ "loss_breakdown": {
+  "all": {
+   "n": 31,
+   "avg_r_net": -1.2637,
+   "avg_cost_r": 0.2637
+  },
+  "stop": {
+   "n": 31,
+   "avg_r_net": -1.2637,
+   "avg_cost_r": 0.2637
+  },
+  "timeout": {
+   "n": 0
+  }
+ },
+ "win_r_distribution": {
+  "n": 12,
+  "mean": 1.5767,
+  "p25": 1.5398,
+  "p50": 1.7212,
+  "p75": 1.7844,
+  "p90": 1.8337
+ },
+ "by_direction": {
+  "long": {
+   "n": 16,
+   "wins": 8,
+   "win_rate": 0.5,
+   "wilson95": [
+    0.28,
+    0.72
+   ],
+   "net_r": 3.06,
+   "expectancy_r": 0.191,
+   "avg_win_r": 1.654,
+   "avg_loss_r": 1.272,
+   "breakeven_wr": 0.4347
+  },
+  "short": {
+   "n": 27,
+   "wins": 4,
+   "win_rate": 0.1481,
+   "wilson95": [
+    0.0592,
+    0.3248
+   ],
+   "net_r": -23.31,
+   "expectancy_r": -0.8633,
+   "avg_win_r": 1.423,
+   "avg_loss_r": 1.261,
+   "breakeven_wr": 0.4698
+  }
+ },
+ "by_halfyear": {
+  "2025-H1": {
+   "n": 19,
+   "wins": 5,
+   "win_rate": 0.2632,
+   "wilson95": [
+    0.1181,
+    0.4879
+   ],
+   "net_r": -10.57,
+   "expectancy_r": -0.5564,
+   "avg_win_r": 1.348,
+   "avg_loss_r": 1.237,
+   "breakeven_wr": 0.4784
+  },
+  "2025-H2": {
+   "n": 23,
+   "wins": 6,
+   "win_rate": 0.2609,
+   "wilson95": [
+    0.1255,
+    0.4647
+   ],
+   "net_r": -11.43,
+   "expectancy_r": -0.4968,
+   "avg_win_r": 1.739,
+   "avg_loss_r": 1.286,
+   "breakeven_wr": 0.4251
+  },
+  "2026-H1": {
+   "n": 1,
+   "wins": 1,
+   "win_rate": 1.0,
+   "wilson95": [
+    0.2065,
+    1.0
+   ],
+   "net_r": 1.75,
+   "expectancy_r": 1.7459,
+   "avg_win_r": 1.746,
+   "avg_loss_r": 0.0,
+   "breakeven_wr": null
+  }
+ },
+ "cost_sensitivity": {
+  "2+5": {
+   "baseline": {
+    "n": 43,
+    "wins": 12,
+    "win_rate": 0.2791,
+    "wilson95": [
+     0.1675,
+     0.4269
+    ],
+    "net_r": -16.71,
+    "expectancy_r": -0.3885,
+    "avg_win_r": 1.668,
+    "avg_loss_r": 1.185,
+    "breakeven_wr": 0.4153
+   },
+   "loss_breakdown": {
+    "all": {
+     "n": 31,
+     "avg_r_net": -1.1846,
+     "avg_cost_r": 0.1846
+    },
+    "stop": {
+     "n": 31,
+     "avg_r_net": -1.1846,
+     "avg_cost_r": 0.1846
+    },
+    "timeout": {
+     "n": 0
+    }
+   }
+  },
+  "5+5": {
+   "baseline": {
+    "n": 43,
+    "wins": 12,
+    "win_rate": 0.2791,
+    "wilson95": [
+     0.1675,
+     0.4269
+    ],
+    "net_r": -20.25,
+    "expectancy_r": -0.471,
+    "avg_win_r": 1.577,
+    "avg_loss_r": 1.264,
+    "breakeven_wr": 0.4449
+   },
+   "loss_breakdown": {
+    "all": {
+     "n": 31,
+     "avg_r_net": -1.2637,
+     "avg_cost_r": 0.2637
+    },
+    "stop": {
+     "n": 31,
+     "avg_r_net": -1.2637,
+     "avg_cost_r": 0.2637
+    },
+    "timeout": {
+     "n": 0
+    }
+   }
+  },
+  "10+10": {
+   "baseline": {
+    "n": 43,
+    "wins": 12,
+    "win_rate": 0.2791,
+    "wilson95": [
+     0.1675,
+     0.4269
+    ],
+    "net_r": -32.07,
+    "expectancy_r": -0.7459,
+    "avg_win_r": 1.273,
+    "avg_loss_r": 1.527,
+    "breakeven_wr": 0.5454
+   },
+   "loss_breakdown": {
+    "all": {
+     "n": 31,
+     "avg_r_net": -1.5274,
+     "avg_cost_r": 0.5274
+    },
+    "stop": {
+     "n": 31,
+     "avg_r_net": -1.5274,
+     "avg_cost_r": 0.5274
+    },
+    "timeout": {
+     "n": 0
+    }
+   }
+  }
+ },
+ "run_meta": {
+  "script": "backtest_breaker.py",
+  "argv": [
+   "backtest_breaker.py",
+   "--db",
+   "C:\\edgerunner\\edgerunner.db",
+   "--mode",
+   "diagnose",
+   "--strategy",
+   "v1",
+   "--setup-tf",
+   "4h",
+   "--exec-tf",
+   "1h",
+   "--fee-bps",
+   "5",
+   "--slippage-bps",
+   "5",
+   "--json-out",
+   "C:\\edgerunner\\diag_h4_breaker_v2fix.json",
+   "--md-out",
+   "C:\\edgerunner\\diag_h4_breaker_v2fix.md"
+  ],
+  "git_commit": "7f7086ce646d738d393161d301e1efbf224ff846",
+  "timestamp": 1785141797.1493638,
+  "db_path": "C:\\edgerunner\\edgerunner.db",
+  "table_rows": {
+   "candles_1h": 13200,
+   "candles_4h": 3300
+  },
+  "train_fraction": 0.65
+ },
+ "config": {
+  "fee_bps": 5.0,
+  "slippage_bps": 5.0,
+  "train_fraction": 0.65,
+  "validity_h1": 24,
+  "max_hold_bars": 96,
+  "stop_atr_mult": 0.25,
+  "pullback_vol_ratio": 1.0,
+  "pullback_delta_ratio": 1.0,
+  "require_pullback_filter": true,
+  "baseline_target_r": 2.0,
+  "strategy": "v1",
+  "setup_tf": "4h",
+  "exec_tf": "1h",
+  "m1_stop_atr_mult": 0.1,
+  "entry_max_zone_dist": 1.0,
+  "m1_timeout_bars": 5760
+ },
+ "range": {
+  "since": null,
+  "until": null
+ }
+}
