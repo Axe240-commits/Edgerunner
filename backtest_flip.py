@@ -43,7 +43,7 @@ from datetime import datetime, timezone
 from backtest_breaker import (
     Config, simulate_trade, trade_stats, wilson_ci,  # noqa: F401 (wilson re-exported)
     _percentiles, _loss_breakdown, _count_outcomes, _sim_candles,
-    _date_to_ms, H1_MS, TF_MS,
+    _date_to_ms, H1_MS, TF_MS, collect_run_meta,
 )
 
 # Flip needs the swing flags for the range-rotation target.
@@ -462,10 +462,20 @@ def main(argv=None):
         if not args.funding_db:
             print('ERROR: --select funding needs --funding-db', file=sys.stderr)
             return 1
-        fconn = sqlite3.connect(f'file:{args.funding_db}?mode=ro', uri=True)
-        funding = fconn.execute(
-            'SELECT ts_ms, rate FROM funding ORDER BY ts_ms').fetchall()
-        fconn.close()
+        try:
+            fconn = sqlite3.connect(f'file:{args.funding_db}?mode=ro', uri=True)
+            funding = fconn.execute(
+                'SELECT ts_ms, rate FROM funding ORDER BY ts_ms').fetchall()
+            fconn.close()
+        except sqlite3.Error as e:
+            raise SystemExit(
+                f'funding.db nicht lesbar ({args.funding_db}): {e} — erst '
+                'funding_loader laufen lassen oder --select weglassen.')
+        if not funding:
+            raise SystemExit(
+                f'funding.db fehlt/leer ({args.funding_db}): 0 Prints — erst '
+                'funding_loader laufen lassen oder --select weglassen. '
+                'Ohne Funding-Daten waehlt der Filter nichts aus.')
         print(f'Loaded {len(funding):,} funding prints')
 
     since_ms = _date_to_ms(args.since) if args.since else 0
@@ -477,6 +487,9 @@ def main(argv=None):
     try:
         h1 = load_candles(conn, args.setup_tf, since_ms, until_ms)
         m15 = load_candles(conn, args.exec_tf, since_ms, until_ms)
+        run_meta = collect_run_meta(
+            'backtest_flip.py', sys.argv, cfg, args.db, conn,
+            [f'candles_{args.setup_tf}', f'candles_{args.exec_tf}'])
     finally:
         conn.close()
 
@@ -495,6 +508,7 @@ def main(argv=None):
         result = run_validate(h1, m15, cfg, setups)
 
     result['config'] = asdict(cfg)
+    result['run_meta'] = run_meta
     result['range'] = {'since': args.since, 'until': args.until}
 
     if args.json_out:

@@ -137,6 +137,34 @@ class TestInvalidation(unittest.TestCase):
         self.assertEqual(s['invalidation'], 'no_pullback')
 
 
+class TestRunMeta(unittest.TestCase):
+    """Every JSON report carries a reproducible run_meta block."""
+
+    def test_run_meta_fields(self):
+        import sqlite3
+        import tempfile
+        import os
+        from backtest_breaker import collect_run_meta, Config
+        tmp = tempfile.NamedTemporaryFile(suffix='.db', delete=False)
+        tmp.close()
+        conn = sqlite3.connect(tmp.name)
+        conn.execute('CREATE TABLE candles_4h (x INTEGER)')
+        conn.execute('INSERT INTO candles_4h VALUES (1), (2), (3)')
+        try:
+            meta = collect_run_meta('backtest_breaker.py',
+                                    ['x.py', '--mode', 'diagnose'],
+                                    Config(), tmp.name, conn, ['candles_4h'])
+        finally:
+            conn.close()
+            os.unlink(tmp.name)
+        for key in ('script', 'argv', 'git_commit', 'timestamp', 'db_path',
+                    'table_rows', 'train_fraction'):
+            self.assertIn(key, meta)
+        self.assertEqual(meta['table_rows']['candles_4h'], 3)
+        self.assertEqual(meta['argv'], ['x.py', '--mode', 'diagnose'])
+        self.assertTrue(meta['git_commit'])  # hash or 'unknown'
+
+
 class TestH4Timeframes(unittest.TestCase):
     """TF-generic path: setup on 4h candles, execution on 1h bars (v1 rules)."""
 

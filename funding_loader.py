@@ -75,15 +75,31 @@ def main(argv=None):
 
     cursor = start_ms
     total = 0
+    empty_pages = 0
     while cursor < end_ms:
         url = (f'{FUNDING_URL}?symbol=BTCUSDT&startTime={cursor}'
                f'&endTime={end_ms}&limit={MAX_PER_REQUEST}')
         try:
             rows = _get_json(url)
         except Exception as e:
-            print(f'ERROR at {cursor}: {e}', file=sys.stderr)
+            # _get_json already retried (Retry-After/backoff): hard abort.
+            print(f'ERROR: funding fetch failed permanently at '
+                  f'{datetime.fromtimestamp(cursor / 1000, tz=timezone.utc):%Y-%m-%d}: '
+                  f'{e}', file=sys.stderr)
+            conn.close()
             return 1
         if not rows:
+            # An empty page MID-RANGE means missing data, not the end of
+            # history (funding prints exist since 2019): visible warning,
+            # no silent data loss. The cursor cannot advance past a gap we
+            # cannot see, so we stop here and report it.
+            if cursor + 8 * 3600_000 < end_ms:
+                empty_pages += 1
+                print(f'\nWARNING: empty funding page at '
+                      f'{datetime.fromtimestamp(cursor / 1000, tz=timezone.utc):%Y-%m-%d} '
+                      f'— history ends here (gap of '
+                      f'{(end_ms - cursor) / 86_400_000:.0f} days not covered)',
+                      file=sys.stderr)
             break
         for r in rows:
             conn.execute('INSERT OR IGNORE INTO funding (ts_ms, rate) VALUES (?,?)',
@@ -99,10 +115,17 @@ def main(argv=None):
 
     n, lo, hi = conn.execute(
         'SELECT COUNT(*), MIN(ts_ms), MAX(ts_ms) FROM funding').fetchone()
+    conn.close()
+    if n == 0:
+        # No rows at all (empty API or all fetches failed): say so clearly
+        # instead of crashing on a None timestamp downstream.
+        print('\nERROR: 0 funding rows fetched — funding.db is empty. '
+              'Check network/API or the --since date.', file=sys.stderr)
+        return 1
     print(f'\nDone: {n:,} rows, '
           f'{datetime.fromtimestamp(lo / 1000, tz=timezone.utc):%Y-%m-%d} -> '
-          f'{datetime.fromtimestamp(hi / 1000, tz=timezone.utc):%Y-%m-%d}')
-    conn.close()
+          f'{datetime.fromtimestamp(hi / 1000, tz=timezone.utc):%Y-%m-%d}'
+          + (f' | WARNING: {empty_pages} empty page(s)' if empty_pages else ''))
     return 0
 
 

@@ -37,6 +37,7 @@ import argparse
 import json
 import sqlite3
 import sys
+import time
 from bisect import bisect_left
 from dataclasses import dataclass, asdict, replace
 from datetime import datetime, timezone
@@ -81,6 +82,38 @@ class Config:
     @property
     def cost_frac(self):
         return (self.fee_bps + self.slippage_bps) / 10_000.0
+
+
+def _git_commit():
+    """Current git commit hash for report provenance ('unknown' fallback)."""
+    import subprocess
+    try:
+        r = subprocess.run(['git', 'rev-parse', 'HEAD'], capture_output=True,
+                           text=True, timeout=5)
+        return r.stdout.strip() or 'unknown'
+    except Exception:
+        return 'unknown'
+
+
+def collect_run_meta(script_name, argv, cfg, db_path, conn, tables):
+    """Provenance block written into every JSON report (RESEARCH findings
+    must be reproducible): script, CLI args, code version, timestamp, DB
+    path + row counts of the candle tables used, train fraction."""
+    rows = {}
+    for t in tables:
+        try:
+            rows[t] = conn.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0]
+        except Exception:
+            rows[t] = None
+    return {
+        'script': script_name,
+        'argv': list(argv),
+        'git_commit': _git_commit(),
+        'timestamp': time.time(),
+        'db_path': db_path,
+        'table_rows': rows,
+        'train_fraction': cfg.train_fraction,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -969,6 +1002,13 @@ def main(argv=None):
             result = run_diagnose(h1, m15, cfg, setups=setups)
         else:
             result = run_validate(h1, m15, cfg, setups=setups)
+
+        meta_tables = {f'candles_{args.setup_tf}', f'candles_{args.exec_tf}'}
+        if cfg.strategy == 'v2':
+            meta_tables.add('candles_1m')
+        result['run_meta'] = collect_run_meta(
+            'backtest_breaker.py', sys.argv, cfg, args.db, conn,
+            sorted(meta_tables))
     finally:
         conn.close()
 

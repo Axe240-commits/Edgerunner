@@ -42,7 +42,7 @@ from datetime import datetime, timezone
 from backtest_breaker import (
     Config, simulate_trade, trade_stats, wilson_ci,  # noqa: F401
     _percentiles, _loss_breakdown, _count_outcomes, _sim_candles,
-    _date_to_ms, TF_MS,
+    _date_to_ms, TF_MS, collect_run_meta,
 )
 
 SEEKER_COLS = ('timestamp', 'open', 'high', 'low', 'close', 'volume', 'delta',
@@ -454,6 +454,9 @@ def main(argv=None):
     try:
         setup_candles = load_candles(conn, args.setup_tf, since_ms, until_ms)
         exec_candles = load_candles(conn, args.exec_tf, since_ms, until_ms)
+        run_meta = collect_run_meta(
+            'backtest_seeker.py', sys.argv, cfg, args.db, conn,
+            [f'candles_{args.setup_tf}', f'candles_{args.exec_tf}'])
     finally:
         conn.close()
 
@@ -473,6 +476,7 @@ def main(argv=None):
         result = run_validate(setup_candles, exec_candles, cfg, setups)
 
     result['config'] = asdict(cfg)
+    result['run_meta'] = run_meta
     result['range'] = {'since': args.since, 'until': args.until}
 
     if args.json_out:
