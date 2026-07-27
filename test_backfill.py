@@ -90,6 +90,30 @@ class TestPartialBuckets(unittest.TestCase):
         self.assertEqual([c['timestamp'] for c in candles],
                          [self.START, self.START + 600_000])
 
+    def test_bucket_cut_by_window_end_dropped(self):
+        # "9-minute window": the 10m bucket [START, START+10m) extends past
+        # end_ms (START+9m) -> dropped even though both 5m candles exist.
+        raw = [_kline(self.START, 300_000), _kline(self.START + 300_000, 300_000)]
+        with mock.patch.object(api, '_binance_get_json', return_value=raw), \
+                mock.patch.object(api.time, 'sleep'):
+            candles = api.fetch_binance_futures_candles(
+                '10m', start_ms=self.START, end_ms=self.START + 540_000,
+                limit=1000)
+        self.assertEqual(candles, [])
+
+    def test_base_grid_gap_drops_bucket(self):
+        # Missing middle 5m timestamp: bucket [START,+10m) has only ONE of
+        # the two EXPECTED base timestamps -> dropped; the full bucket stays.
+        raw = [_kline(self.START, 300_000),
+               _kline(self.START + 600_000, 300_000),
+               _kline(self.START + 900_000, 300_000)]
+        with mock.patch.object(api, '_binance_get_json', return_value=raw), \
+                mock.patch.object(api.time, 'sleep'):
+            candles = api.fetch_binance_futures_candles(
+                '10m', start_ms=self.START, end_ms=self.END, limit=1000)
+        self.assertEqual([c['timestamp'] for c in candles],
+                         [self.START + 600_000])
+
 
 class LoaderPatchMixin:
     """Common patches so load_history never touches DB, analysis or network."""
@@ -110,7 +134,7 @@ class TestMidRangeEmpty(LoaderPatchMixin, unittest.TestCase):
     """Empty batch mid-range -> retry/abort path -> TF failed + INCOMPLETE.
     Empty batch at the right edge -> complete."""
 
-    def _run_loader(self, side_effect, end):
+    def _run_loader(self, side_effect, end, live_open_candle=False):
         m_fetch = mock.Mock(side_effect=side_effect)
         with mock.patch.multiple(hl, **self._loader_patches()), \
                 mock.patch.object(hl, 'fetch_binance_futures_candles', m_fetch), \
@@ -119,7 +143,8 @@ class TestMidRangeEmpty(LoaderPatchMixin, unittest.TestCase):
             with contextlib.redirect_stdout(buf):
                 hl.load_history(start_date='2025-01-20', end_date=end,
                                 timeframes=['1m'], db_path='/nonexistent/x.db',
-                                source='binance-futures')
+                                source='binance-futures',
+                                live_open_candle=live_open_candle)
         return buf.getvalue(), m_fetch
 
     def test_midrange_empty_marks_failed_incomplete(self):
@@ -157,7 +182,7 @@ class TestMidRangeEmpty(LoaderPatchMixin, unittest.TestCase):
     def test_source_ending_early_is_incomplete_not_failed(self):
         start = hl._date_to_ms('2025-01-20')
         # 4000 candles, then the last window (320min of 4320) comes back
-        # empty: the source ends BEFORE the last full interval -> the TF is
+        # empty: the source ends BEFORE the requested end -> the TF is
         # marked INCOMPLETE (separate list), but NOT hard-failed.
         out, _ = self._run_loader(
             [_candle_dicts(start, 1000),
@@ -165,24 +190,31 @@ class TestMidRangeEmpty(LoaderPatchMixin, unittest.TestCase):
              _candle_dicts(start + 2000 * 60_000, 1000),
              _candle_dicts(start + 3000 * 60_000, 1000), []],
             '2025-01-23')
-        self.assertIn('INCOMPLETE (source ended early)', out)
-        self.assertIn('INCOMPLETE: 1m', out)
+        self.assertIn('INCOMPLETE (source ended before requested end)', out)
+        self.assertIn('INCOMPLETE: 1m (source ended before requested end)', out)
         self.assertNotIn('FAILED', out)
 
-    def test_only_running_candle_missing_is_complete(self):
+    def test_running_candle_empty_needs_live_flag(self):
         start = hl._date_to_ms('2025-01-20')
-        # Data through the last FULL interval (start+4319min of 4320min);
-        # the empty batch only concerns the still-running candle.
-        out, _ = self._run_loader(
-            [_candle_dicts(start, 1000),
-             _candle_dicts(start + 1000 * 60_000, 1000),
-             _candle_dicts(start + 2000 * 60_000, 1000),
-             _candle_dicts(start + 3000 * 60_000, 1000),
-             _candle_dicts(start + 4000 * 60_000, 319), []],
-            '2025-01-23')
+        batches = [_candle_dicts(start, 1000),
+                   _candle_dicts(start + 1000 * 60_000, 1000),
+                   _candle_dicts(start + 2000 * 60_000, 1000),
+                   _candle_dicts(start + 3000 * 60_000, 1000),
+                   _candle_dicts(start + 4000 * 60_000, 319), []]
+        # Without --live-open-candle: even an empty batch at the running
+        # candle is INCOMPLETE before an explicit historical end.
+        out, _ = self._run_loader(batches, '2025-01-23')
+        self.assertIn('INCOMPLETE (source ended before requested end)', out)
+        # With the flag: only the running candle is missing -> complete,
+        # and the watermark shows the source's data level (gap 0 intervals).
+        out, _ = self._run_loader(batches, '2025-01-23', live_open_candle=True)
         self.assertIn('(complete)', out)
         self.assertNotIn('INCOMPLETE', out)
         self.assertNotIn('FAILED', out)
+        self.assertIn('watermark', out)
+        # last delivered candle = start+4318min; only the running candle at
+        # [4319, 4320) is missing -> gap exactly 1 interval.
+        self.assertIn('end - 1 intervals', out)
 
 
 class TestBaseDedup(unittest.TestCase):

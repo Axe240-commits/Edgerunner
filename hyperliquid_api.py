@@ -33,17 +33,24 @@ AGGREGATED_TIMEFRAMES = {
 }
 
 
-def _aggregate_ohlcv(candles, target_interval, base_count=None):
+def _aggregate_ohlcv(candles, target_interval, base_count=None,
+                     base_ims=None, start_ms=None, end_ms=None):
     """Aggregate smaller candles into a larger derived interval.
 
     Base candles are deduplicated by timestamp FIRST (keep first instance):
     pagination overlaps or duplicated rows in a response would otherwise
     double-count volume inside a bucket.
 
-    base_count: when set, only COMPLETE buckets are kept — a bucket must
-    contain exactly base_count base candles (e.g. 2 for 10m from 5m).
-    Documented strict rule: partial buckets at a window edge (e.g. a 10m
-    bucket with only one 5m candle) are DROPPED, never stored. The next
+    Completeness rules (strict, documented):
+    - base_count: a bucket must contain exactly base_count base candles.
+    - base_ims (with base_count): the EXACT expected base timestamps
+      bucket_start + k*base_ims must all be present — two arbitrary candles
+      in a bucket are not enough; a gap in the base grid drops the bucket.
+    - start_ms/end_ms: a bucket is only emitted when it lies FULLY inside
+      the requested window: bucket_start >= start_ms and
+      bucket_start + interval_ms <= end_ms. A window end cutting into a
+      bucket drops that bucket even when its base candles exist.
+    Partial buckets at a window edge are never stored; the next
     overlapping load stores their complete version.
     """
     target_ms = INTERVAL_MS[target_interval]
@@ -57,6 +64,7 @@ def _aggregate_ohlcv(candles, target_interval, base_count=None):
         unique.append(candle)
     buckets = {}
     order = []
+    bucket_ts_set = {}
     for candle in unique:
         bucket_ts = (int(candle['timestamp']) // target_ms) * target_ms
         bucket = buckets.get(bucket_ts)
@@ -80,9 +88,11 @@ def _aggregate_ohlcv(candles, target_interval, base_count=None):
                 if key in candle:
                     bucket[key] = float(candle.get(key) or 0)
             buckets[bucket_ts] = bucket
+            bucket_ts_set[bucket_ts] = {int(candle['timestamp'])}
             order.append(bucket_ts)
             continue
 
+        bucket_ts_set[bucket_ts].add(int(candle['timestamp']))
         bucket['high'] = max(bucket['high'], candle['high'])
         bucket['low'] = min(bucket['low'], candle['low'])
         bucket['close'] = candle['close']
@@ -101,6 +111,17 @@ def _aggregate_ohlcv(candles, target_interval, base_count=None):
     result = [buckets[ts] for ts in sorted(order)]
     if base_count is not None:
         result = [b for b in result if b['_count'] >= base_count]
+    if base_ims is not None and base_count is not None:
+        # Exact base-grid check: the EXPECTED timestamps must be present,
+        # not just any base_count candles.
+        result = [b for b in result
+                  if all(b['timestamp'] + k * base_ims in bucket_ts_set[b['timestamp']]
+                         for k in range(base_count))]
+    if start_ms is not None:
+        result = [b for b in result if b['timestamp'] >= start_ms]
+    if end_ms is not None:
+        result = [b for b in result
+                  if b['timestamp'] + target_ms <= end_ms]
     for b in result:
         del b['_count']
     return result
@@ -145,7 +166,9 @@ def fetch_candles(coin='BTC', interval='1m', start_ms=None, end_ms=None, limit=5
             limit=base_limit,
         )
         aggregated = _aggregate_ohlcv(base_candles, interval,
-                                      base_count=ratio)
+                                      base_count=ratio,
+                                      base_ims=INTERVAL_MS[base_interval],
+                                      start_ms=start_ms, end_ms=end_ms)
         if start_ms is not None:
             aggregated = [c for c in aggregated if c['timestamp'] >= start_ms]
         if end_ms is not None:
@@ -440,7 +463,9 @@ def fetch_binance_futures_candles(interval='1m', start_ms=None, end_ms=None, lim
             time.sleep(0.05)
 
         aggregated = _aggregate_ohlcv(base_candles, interval,
-                                      base_count=ratio)
+                                      base_count=ratio,
+                                      base_ims=INTERVAL_MS[base_interval],
+                                      start_ms=start_ms, end_ms=end_ms)
         aggregated = [c for c in aggregated
                       if start_ms <= c['timestamp'] < end_ms]
         return aggregated[-limit:]

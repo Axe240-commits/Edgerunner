@@ -68,7 +68,8 @@ def _fetch_binance_delta_batch(interval, start_ms, end_ms, limit=1000):
 
 def load_history(coin='BTC', start_date=None, end_date=None,
                  days=None, timeframes=None, db_path=DEFAULT_DB_PATH,
-                 fill_gaps=False, source='hyperliquid'):
+                 fill_gaps=False, source='hyperliquid',
+                 live_open_candle=False):
     """Load historical candles from Hyperliquid + Binance delta.
 
     source='hyperliquid':     OHLCV from Hyperliquid (matches your trading
@@ -78,6 +79,11 @@ def load_history(coin='BTC', start_date=None, end_date=None,
                               Futures BTCUSDT perp (full history, unlike the
                               HL candleSnapshot for small TFs). The Binance
                               spot merge (spot_volume/spot_delta) is kept.
+    live_open_candle:         only with this flag an empty batch at the very
+                              end of the range may count as "complete" (the
+                              still-running, not-yet-closed candle). Without
+                              it an empty batch before an explicit end is
+                              always marked INCOMPLETE.
     """
     init_db(db_path)
 
@@ -153,6 +159,8 @@ def load_history(coin='BTC', start_date=None, end_date=None,
         last_error_cursor = None
         tf_failed = False
         tf_incomplete = False
+        tf_incomplete_reason = None
+        last_data_ts = None   # watermark: newest candle ts the source delivered
         spot_missing_windows = 0
 
         while current_ms < end_ms:
@@ -190,24 +198,26 @@ def load_history(coin='BTC', start_date=None, end_date=None,
                             break
                         time.sleep(2)
                         continue
-                    # Right-edge empty batch. Documented rule: this counts
-                    # as a TRUE end of data ("complete") ONLY when the
-                    # previous batch delivered candles AND the cursor
-                    # already reached the last fully expectable interval
-                    # (end_ms - ims) — i.e. the empty batch only concerns
-                    # the still-running, not-yet-closed candle. Anything
-                    # else (source ends early, empty-after-empty) is
-                    # marked INCOMPLETE — deliberately NOT the hard
-                    # ABORT/FAILED path, so a legitimately ending source
-                    # (e.g. listing started later) stays distinguishable
-                    # from a pipeline defect.
+                    # Right-edge empty batch. Documented rule: an empty
+                    # batch before an EXPLICIT historical end is INCOMPLETE
+                    # by default — the source stopped before the requested
+                    # end. The relaxed reading ("only the still-running,
+                    # not-yet-closed candle is missing -> complete") applies
+                    # ONLY with --live-open-candle enabled, and then also
+                    # requires data in the previous batch plus the cursor
+                    # at the last full interval (end_ms - ims).
                     last_full = end_ms - ims
-                    if total_loaded > 0 and current_ms >= last_full:
-                        break  # only the running candle missing
-                    print(f'\n  [{tf}] WARNING: source ends early at '
+                    if (live_open_candle and total_loaded > 0
+                            and current_ms >= last_full):
+                        break  # running candle only, live mode
+                    reason = ('source ended early'
+                              if live_open_candle else
+                              'source ended before requested end')
+                    print(f'\n  [{tf}] WARNING: {reason} at '
                           f'{_ms_to_date(current_ms)} '
                           f'({total_loaded:,}/{total_candles:,}) — INCOMPLETE')
                     tf_incomplete = True
+                    tf_incomplete_reason = reason
                     break
 
                 # 2) Fetch Binance SPOT volume+delta for same range and merge.
@@ -254,6 +264,7 @@ def load_history(coin='BTC', start_date=None, end_date=None,
 
                 raw_buffer.extend(candles)
                 total_loaded += len(candles)
+                last_data_ts = candles[-1]['timestamp']
 
                 # Move cursor past last candle
                 current_ms = candles[-1]['timestamp'] + ims
@@ -320,30 +331,39 @@ def load_history(coin='BTC', start_date=None, end_date=None,
             print(f'\n  [{tf:>3s}] spot-merge missing for {spot_missing_windows} windows')
         if total_loaded == 0 and not tf_failed:
             print(f'\n  [{tf:>3s}] WARNING: 0 candles loaded — source has no data for this range')
-        # complete = the loader reached the last full interval before the
-        # running candle. INCOMPLETE = source ended early (warning above,
-        # -> incomplete_tfs) or aborted (-> failed_tfs).
+        # complete = the loader reached the requested end (live mode: the
+        # last full interval before the running candle). INCOMPLETE = source
+        # ended before the requested end (-> incomplete_tfs) or aborted
+        # (-> failed_tfs). The watermark states how far the source actually
+        # delivered data (last candle ts vs end_ms, in intervals).
         if tf_failed:
             status = 'INCOMPLETE (aborted)'
         elif tf_incomplete:
-            status = 'INCOMPLETE (source ended early)'
+            status = f'INCOMPLETE ({tf_incomplete_reason})'
         else:
             status = 'complete'
+        if last_data_ts is not None:
+            gap = max(0, int((end_ms - (last_data_ts + ims)) // ims))
+            watermark = (f'watermark {_ms_to_date(last_data_ts)} '
+                         f'(end - {gap} intervals)')
+        else:
+            watermark = 'watermark - (no data)'
         print(f'\n  [{tf:>3s}] Done: {total_loaded:,}/{total_candles:,} loaded '
-              f'({status}) in {elapsed:.1f}s, DB total: {n_db:,}')
+              f'({status}) in {elapsed:.1f}s, DB total: {n_db:,} | {watermark}')
         print()
 
         if tf_failed:
             failed_tfs.append(tf)
         elif tf_incomplete:
-            incomplete_tfs.append(tf)
+            incomplete_tfs.append((tf, tf_incomplete_reason))
         else:
             ok_tfs.append(tf)
 
     # Final summary: which timeframes completed, which are suspect, which failed.
     print(f'  Summary: {len(ok_tfs)} TF(s) ok ({", ".join(ok_tfs) or "-"})')
     if incomplete_tfs:
-        print(f'  INCOMPLETE: {", ".join(incomplete_tfs)} (source ended early)')
+        print('  INCOMPLETE: ' + ', '.join(
+            f'{tf} ({reason})' for tf, reason in incomplete_tfs))
     if failed_tfs:
         print(f'  FAILED: {", ".join(failed_tfs)}')
 
@@ -508,6 +528,10 @@ if __name__ == '__main__':
                              'binance-futures: full history + native futures '
                              'volume/delta from Binance Futures BTCUSDT perp')
     parser.add_argument('--fill-gaps', action='store_true', help='Fill gaps in existing data')
+    parser.add_argument('--live-open-candle', action='store_true',
+                        help='live mode: accept the still-running, not-yet-'
+                             'closed candle as the expected range end (empty '
+                             'final batch then counts as complete)')
     parser.add_argument('--enrich-whales', action='store_true', help='Enrich whale features')
     args = parser.parse_args()
 
@@ -523,4 +547,5 @@ if __name__ == '__main__':
             db_path=args.db,
             fill_gaps=args.fill_gaps,
             source=args.source,
+            live_open_candle=args.live_open_candle,
         )
