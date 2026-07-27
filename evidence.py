@@ -60,15 +60,23 @@ def _sha256_file(path):
 
 
 def _file_sha256_short(path, n=16):
-    """Short sha256 (first n hex chars) of a source file — adapter version."""
+    """Short sha256 (first n hex chars) of a source file — adapter version.
+
+    PLATFORM-NEUTRAL by design (method: sha256-text-lf): the file is read
+    as UTF-8 text and line endings are normalized (CRLF/CR -> LF) before
+    hashing, so evidence artifacts are verifiable across hosts/checkouts
+    regardless of the platform's line-ending convention.
+    """
     try:
-        h = hashlib.sha256()
-        with open(path, 'rb') as f:
-            for chunk in iter(lambda: f.read(HASH_CHUNK), b''):
-                h.update(chunk)
-        return h.hexdigest()[:n]
-    except OSError:
+        with open(path, 'r', encoding='utf-8', newline='') as f:
+            text = f.read()
+        normalized = text.replace('\r\n', '\n').replace('\r', '\n')
+        return hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:n]
+    except (OSError, UnicodeDecodeError):
         return None
+
+
+ADAPTER_HASH_METHOD = 'sha256-text-lf'
 
 
 def _git_commit():
@@ -132,6 +140,7 @@ def build_evidence(script, mode, argv, cfg, db_path, result_path,
 
     data_source = {
         'name': adapter_name,
+        'method': ADAPTER_HASH_METHOD,
         'adapter_sha256': {os.path.basename(f): _file_sha256_short(f)
                            for f in adapter_files},
     }

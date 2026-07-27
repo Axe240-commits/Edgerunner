@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Tests for the evidence artifact (synthetic mini DB, no network)."""
 import json
+import glob
 import os
 import sqlite3
 import tempfile
 import unittest
 
-from evidence import build_evidence, _sha256_file, _coverage, TF_MS
+from evidence import build_evidence, _sha256_file, _coverage, TF_MS, \
+    _file_sha256_short, ADAPTER_HASH_METHOD
+
+REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 
 H4 = TF_MS['4h']
 
@@ -78,6 +82,49 @@ class TestEvidence(unittest.TestCase):
         self.assertTrue(ev['result_sha256'])
         self.assertIn('test_evidence.py',
                       next(iter(ev['data_source']['adapter_sha256'].keys())))
+
+
+class TestPlatformNeutralHash(unittest.TestCase):
+    """CRLF and LF versions of the same file must hash identically."""
+
+    def test_crlf_lf_same_hash(self):
+        d = tempfile.mkdtemp()
+        try:
+            p_lf = os.path.join(d, 'a.py')
+            p_crlf = os.path.join(d, 'b.py')
+            with open(p_lf, 'w', newline='') as f:
+                f.write('line1\nline2\n')
+            with open(p_crlf, 'w', newline='') as f:
+                f.write('line1\r\nline2\r\n')
+            self.assertEqual(_file_sha256_short(p_lf),
+                             _file_sha256_short(p_crlf))
+        finally:
+            import shutil
+            shutil.rmtree(d, ignore_errors=True)
+
+
+class TestCommittedArtifactsProvenance(unittest.TestCase):
+    """Every committed evidence artifact's adapter hashes must match the
+    repo's checked-in source files (platform-neutral sha256-text-lf)."""
+
+    def test_artifacts_match_repo_sources(self):
+        paths = sorted(
+            glob.glob(os.path.join(REPO_DIR, 'evidence', '2*_diagnose.json'))
+            + glob.glob(os.path.join(REPO_DIR, 'evidence', '2*_validate.json')))
+        self.assertTrue(paths, 'no committed evidence artifacts found')
+        for p in paths:
+            with open(p) as f:
+                ev = json.load(f)
+            ds = ev['data_source']
+            self.assertEqual(ds.get('method'), ADAPTER_HASH_METHOD, p)
+            for group in ('adapter_sha256', 'loader_sha256'):
+                for name, artifact_hash in ds.get(group, {}).items():
+                    repo_file = os.path.join(REPO_DIR, name)
+                    self.assertTrue(os.path.isfile(repo_file),
+                                    f'{name} missing in repo')
+                    self.assertEqual(
+                        artifact_hash, _file_sha256_short(repo_file),
+                        f'{os.path.basename(p)}: {name} hash mismatch')
 
 
 if __name__ == '__main__':
