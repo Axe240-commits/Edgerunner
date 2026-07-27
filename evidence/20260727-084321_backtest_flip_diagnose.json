@@ -1,59 +1,59 @@
 {
- "evidence_version": 1,
- "script": "backtest_flip.py",
- "mode": "diagnose",
- "argv": [
-  "backtest_flip.py",
-  "--db",
-  "C:\\edgerunner\\edgerunner.db",
-  "--mode",
-  "diagnose",
-  "--setup-tf",
-  "4h",
-  "--exec-tf",
-  "1h",
-  "--json-out",
-  "C:\\edgerunner\\diag_h4_flip_v2fix.json",
-  "--md-out",
-  "C:\\edgerunner\\diag_h4_flip_v2fix.md"
- ],
- "git_commit": "7f7086ce646d738d393161d301e1efbf224ff846",
- "data_source": {
-  "name": "binance-futures",
-  "adapter_sha256": {
-   "hyperliquid_api.py": "c3430fa206da54ed",
-   "history_loader.py": "f5b94466ed8b9a14"
-  }
- },
- "db": {
-  "path": "C:\\edgerunner\\edgerunner.db",
-  "sha256": "a97e709c6df505b7414b526dd40967a7f34dfbd9ddf9e443b318d4ba662e8293",
-  "method": "full",
-  "size_bytes": 1045798912,
-  "hash_seconds": 0.59
- },
- "window": {
-  "since": null,
-  "until": null,
-  "train_fraction": 0.65,
-  "train_cutoff_ts": 1768276800000
- },
- "coverage": {
-  "candles_4h": {
-   "rows": 3300,
-   "min_ts": 1737388800000,
-   "max_ts": 1784894400000,
-   "gaps_over_2x_interval": 0,
-   "biggest_gap_intervals": 0
+  "evidence_version": 1,
+  "script": "backtest_flip.py",
+  "mode": "diagnose",
+  "argv": [
+    "backtest_flip.py",
+    "--db",
+    "C:\\edgerunner\\edgerunner.db",
+    "--mode",
+    "diagnose",
+    "--setup-tf",
+    "4h",
+    "--exec-tf",
+    "1h",
+    "--json-out",
+    "C:\\edgerunner\\diag_h4_flip_v2fix.json",
+    "--md-out",
+    "C:\\edgerunner\\diag_h4_flip_v2fix.md"
+  ],
+  "git_commit": "7f7086ce646d738d393161d301e1efbf224ff846",
+  "data_source": {
+    "name": "binance-futures",
+    "adapter_sha256": {
+      "hyperliquid_api.py": "c3430fa206da54ed",
+      "history_loader.py": "f5b94466ed8b9a14"
+    }
   },
-  "candles_1h": {
-   "rows": 13200,
-   "min_ts": 1737381600000,
-   "max_ts": 1784898000000,
-   "gaps_over_2x_interval": 0,
-   "biggest_gap_intervals": 0
-  }
- },
- "result_file": "C:\\edgerunner\\diag_h4_flip_v2fix.json",
- "result_sha256": "78a7d2ece9d1855302c38bea3d84d5526d44c9534845f18385e17adbb129e39b"
+  "db": {
+    "path": "C:\\edgerunner\\edgerunner.db",
+    "sha256": "a97e709c6df505b7414b526dd40967a7f34dfbd9ddf9e443b318d4ba662e8293",
+    "method": "full",
+    "size_bytes": 1045798912,
+    "hash_seconds": 0.59
+  },
+  "window": {
+    "since": null,
+    "until": null,
+    "train_fraction": 0.65,
+    "train_cutoff_ts": 1768276800000
+  },
+  "coverage": {
+    "candles_4h": {
+      "rows": 3300,
+      "min_ts": 1737388800000,
+      "max_ts": 1784894400000,
+      "gaps_over_2x_interval": 0,
+      "biggest_gap_intervals": 0
+    },
+    "candles_1h": {
+      "rows": 13200,
+      "min_ts": 1737381600000,
+      "max_ts": 1784898000000,
+      "gaps_over_2x_interval": 0,
+      "biggest_gap_intervals": 0
+    }
+  },
+  "result_file": "evidence/diag_h4_flip_v2fix.json",
+  "result_sha256": "78a7d2ece9d1855302c38bea3d84d5526d44c9534845f18385e17adbb129e39b"
 }
