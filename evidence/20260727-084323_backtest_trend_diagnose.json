@@ -1,0 +1,55 @@
+{
+ "evidence_version": 1,
+ "script": "backtest_trend.py",
+ "mode": "diagnose",
+ "argv": [
+  "backtest_trend.py",
+  "--db",
+  "C:\\edgerunner\\edgerunner.db",
+  "--mode",
+  "diagnose",
+  "--json-out",
+  "C:\\edgerunner\\diag_trend_v2fix.json",
+  "--md-out",
+  "C:\\edgerunner\\diag_trend_v2fix.md"
+ ],
+ "git_commit": "7f7086ce646d738d393161d301e1efbf224ff846",
+ "data_source": {
+  "name": "binance-futures",
+  "adapter_sha256": {
+   "hyperliquid_api.py": "c3430fa206da54ed",
+   "history_loader.py": "f5b94466ed8b9a14"
+  }
+ },
+ "db": {
+  "path": "C:\\edgerunner\\edgerunner.db",
+  "sha256": "a97e709c6df505b7414b526dd40967a7f34dfbd9ddf9e443b318d4ba662e8293",
+  "method": "full",
+  "size_bytes": 1045798912,
+  "hash_seconds": 0.59
+ },
+ "window": {
+  "since": null,
+  "until": null,
+  "train_fraction": 0.65,
+  "train_cutoff_ts": 1768276800000
+ },
+ "coverage": {
+  "candles_4h": {
+   "rows": 3300,
+   "min_ts": 1737388800000,
+   "max_ts": 1784894400000,
+   "gaps_over_2x_interval": 0,
+   "biggest_gap_intervals": 0
+  },
+  "candles_1h": {
+   "rows": 13200,
+   "min_ts": 1737381600000,
+   "max_ts": 1784898000000,
+   "gaps_over_2x_interval": 0,
+   "biggest_gap_intervals": 0
+  }
+ },
+ "result_file": "C:\\edgerunner\\diag_trend_v2fix.json",
+ "result_sha256": "2c5416de32619aa5caecd50f29c55fc8bf874baf2c5e3a0c9a559c789dc4aaf5"
+}

@@ -33,6 +33,7 @@ Usage:
 """
 import argparse
 import json
+import os
 import sqlite3
 import sys
 from bisect import bisect_left, bisect_right
@@ -515,6 +516,23 @@ def main(argv=None):
         with open(args.json_out, 'w') as f:
             json.dump(result, f, indent=1)
         print(f'JSON -> {args.json_out}')
+        from evidence import build_evidence
+        repo_dir = os.path.dirname(os.path.abspath(__file__))
+        split = int(len(h1) * cfg.train_fraction)
+        cutoff = h1[split]['timestamp'] if split < len(h1) else None
+        loader_files = ([os.path.join(repo_dir, 'funding_loader.py')]
+                        if args.funding_db else None)
+        ev_path = build_evidence(
+            script='backtest_flip.py', mode=args.mode, argv=sys.argv,
+            cfg=cfg, db_path=args.db, result_path=args.json_out,
+            tables=[f'candles_{args.setup_tf}', f'candles_{args.exec_tf}'],
+            adapter_name='binance-futures',
+            adapter_files=[os.path.join(repo_dir, 'hyperliquid_api.py'),
+                           os.path.join(repo_dir, 'history_loader.py')],
+            loader_files=loader_files,
+            window={'since': args.since, 'until': args.until},
+            train_cutoff_ts=cutoff)
+        print(f'EVIDENCE -> {ev_path}')
     md = render_md(result, cfg)
     if args.md_out:
         with open(args.md_out, 'w') as f:
