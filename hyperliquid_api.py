@@ -112,11 +112,13 @@ def _aggregate_ohlcv(candles, target_interval, base_count=None,
     if base_count is not None:
         result = [b for b in result if b['_count'] >= base_count]
     if base_ims is not None and base_count is not None:
-        # Exact base-grid check: the EXPECTED timestamps must be present,
-        # not just any base_count candles.
+        # Exact base-grid check: the bucket's base timestamps must EQUAL the
+        # expected grid set — a gap drops the bucket, and so does any extra
+        # off-grid candle inside it (would inflate volume/trades).
         result = [b for b in result
-                  if all(b['timestamp'] + k * base_ims in bucket_ts_set[b['timestamp']]
-                         for k in range(base_count))]
+                  if bucket_ts_set[b['timestamp']] ==
+                  {b['timestamp'] + k * base_ims
+                   for k in range(base_count)}]
     if start_ms is not None:
         result = [b for b in result if b['timestamp'] >= start_ms]
     if end_ms is not None:

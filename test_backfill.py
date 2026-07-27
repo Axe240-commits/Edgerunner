@@ -114,6 +114,33 @@ class TestPartialBuckets(unittest.TestCase):
         self.assertEqual([c['timestamp'] for c in candles],
                          [self.START + 600_000])
 
+    def test_off_grid_extra_candle_drops_bucket(self):
+        # Bucket has the two correct 5m candles PLUS an off-grid candle at
+        # bucket_start + 2min: exact-grid rule must drop the whole bucket
+        # (subset check would have aggregated the extra volume in).
+        raw = [_kline(self.START, 300_000),
+               _kline(self.START + 120_000, 300_000),  # off-grid: +2min
+               _kline(self.START + 300_000, 300_000),
+               _kline(self.START + 600_000, 300_000),
+               _kline(self.START + 900_000, 300_000)]
+        with mock.patch.object(api, '_binance_get_json', return_value=raw), \
+                mock.patch.object(api.time, 'sleep'):
+            candles = api.fetch_binance_futures_candles(
+                '10m', start_ms=self.START, end_ms=self.END, limit=1000)
+        # only the clean bucket [START+10m, +20m) survives
+        self.assertEqual([c['timestamp'] for c in candles],
+                         [self.START + 600_000])
+        self.assertEqual(candles[0]['volume'], 20.0)
+
+    def test_full_correct_bucket_still_accepted(self):
+        raw = [_kline(self.START + i * 300_000, 300_000) for i in range(4)]
+        with mock.patch.object(api, '_binance_get_json', return_value=raw), \
+                mock.patch.object(api.time, 'sleep'):
+            candles = api.fetch_binance_futures_candles(
+                '10m', start_ms=self.START, end_ms=self.END, limit=1000)
+        self.assertEqual([c['timestamp'] for c in candles],
+                         [self.START, self.START + 600_000])
+
 
 class LoaderPatchMixin:
     """Common patches so load_history never touches DB, analysis or network."""
