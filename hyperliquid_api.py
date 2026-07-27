@@ -36,6 +36,10 @@ AGGREGATED_TIMEFRAMES = {
 def _aggregate_ohlcv(candles, target_interval, base_count=None):
     """Aggregate smaller candles into a larger derived interval.
 
+    Base candles are deduplicated by timestamp FIRST (keep first instance):
+    pagination overlaps or duplicated rows in a response would otherwise
+    double-count volume inside a bucket.
+
     base_count: when set, only COMPLETE buckets are kept — a bucket must
     contain exactly base_count base candles (e.g. 2 for 10m from 5m).
     Documented strict rule: partial buckets at a window edge (e.g. a 10m
@@ -43,9 +47,17 @@ def _aggregate_ohlcv(candles, target_interval, base_count=None):
     overlapping load stores their complete version.
     """
     target_ms = INTERVAL_MS[target_interval]
+    seen = set()
+    unique = []
+    for candle in candles:
+        ts = int(candle['timestamp'])
+        if ts in seen:
+            continue
+        seen.add(ts)
+        unique.append(candle)
     buckets = {}
     order = []
-    for candle in candles:
+    for candle in unique:
         bucket_ts = (int(candle['timestamp']) // target_ms) * target_ms
         bucket = buckets.get(bucket_ts)
         if bucket is None:

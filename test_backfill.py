@@ -143,6 +143,78 @@ class TestMidRangeEmpty(LoaderPatchMixin, unittest.TestCase):
         self.assertIn('(complete)', out)
 
 
+    def test_empty_at_right_edge_is_complete(self):
+        start = hl._date_to_ms('2025-01-20')
+        # end = start + 2160min: after two full 1000-candle windows the last
+        # window (160min) comes back empty -> true end of data -> complete.
+        out, _ = self._run_loader(
+            [_candle_dicts(start, 1000),
+             _candle_dicts(start + 1000 * 60_000, 1000), []],
+            '2025-01-21')
+        self.assertNotIn('FAILED', out)
+        self.assertIn('(complete)', out)
+
+    def test_source_ending_early_is_incomplete_not_failed(self):
+        start = hl._date_to_ms('2025-01-20')
+        # 4000 candles, then the last window (320min of 4320) comes back
+        # empty: the source ends BEFORE the last full interval -> the TF is
+        # marked INCOMPLETE (separate list), but NOT hard-failed.
+        out, _ = self._run_loader(
+            [_candle_dicts(start, 1000),
+             _candle_dicts(start + 1000 * 60_000, 1000),
+             _candle_dicts(start + 2000 * 60_000, 1000),
+             _candle_dicts(start + 3000 * 60_000, 1000), []],
+            '2025-01-23')
+        self.assertIn('INCOMPLETE (source ended early)', out)
+        self.assertIn('INCOMPLETE: 1m', out)
+        self.assertNotIn('FAILED', out)
+
+    def test_only_running_candle_missing_is_complete(self):
+        start = hl._date_to_ms('2025-01-20')
+        # Data through the last FULL interval (start+4319min of 4320min);
+        # the empty batch only concerns the still-running candle.
+        out, _ = self._run_loader(
+            [_candle_dicts(start, 1000),
+             _candle_dicts(start + 1000 * 60_000, 1000),
+             _candle_dicts(start + 2000 * 60_000, 1000),
+             _candle_dicts(start + 3000 * 60_000, 1000),
+             _candle_dicts(start + 4000 * 60_000, 319), []],
+            '2025-01-23')
+        self.assertIn('(complete)', out)
+        self.assertNotIn('INCOMPLETE', out)
+        self.assertNotIn('FAILED', out)
+
+
+class TestBaseDedup(unittest.TestCase):
+    """Duplicated base-candle timestamps must not double-count bucket volume."""
+
+    START = 1_600_000_200_000  # 10m-aligned
+    END = START + 30 * 60_000
+
+    def test_binance_dedup_no_double_volume(self):
+        raw = [_kline(self.START + i * 300_000, 300_000) for i in range(4)]
+        raw.insert(1, list(raw[1]))  # duplicate of the 2nd 5m kline
+        with mock.patch.object(api, '_binance_get_json', return_value=raw), \
+                mock.patch.object(api.time, 'sleep'):
+            candles = api.fetch_binance_futures_candles(
+                '10m', start_ms=self.START, end_ms=self.END, limit=1000)
+        self.assertEqual(len(candles), 2)
+        for c in candles:
+            self.assertEqual(c['volume'], 20.0)  # 2 x 10, not 30
+
+    def test_hl_dedup_no_double_volume(self):
+        hl_rows = [{'t': self.START + i * 300_000, 'o': '100', 'h': '110',
+                    'l': '90', 'c': '105', 'v': '10'} for i in range(4)]
+        hl_rows.insert(1, dict(hl_rows[1]))  # duplicate timestamp
+        with mock.patch('urllib.request.urlopen',
+                        return_value=_FakeResp(hl_rows)):
+            candles = api.fetch_candles('BTC', '10m', start_ms=self.START,
+                                        end_ms=self.END, limit=500)
+        self.assertEqual(len(candles), 2)
+        for c in candles:
+            self.assertEqual(c['volume'], 20.0)
+
+
 class TestStartFloor(LoaderPatchMixin, unittest.TestCase):
     """P1-1: the history floor must be source-specific."""
 

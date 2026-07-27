@@ -95,6 +95,7 @@ def load_history(coin='BTC', start_date=None, end_date=None,
 
     ok_tfs = []
     failed_tfs = []
+    incomplete_tfs = []
 
     print(f'\n  Edgerunner History Loader')
     print(f'  {"─" * 40}')
@@ -151,6 +152,7 @@ def load_history(coin='BTC', start_date=None, end_date=None,
         consecutive_errors = 0
         last_error_cursor = None
         tf_failed = False
+        tf_incomplete = False
         spot_missing_windows = 0
 
         while current_ms < end_ms:
@@ -188,7 +190,25 @@ def load_history(coin='BTC', start_date=None, end_date=None,
                             break
                         time.sleep(2)
                         continue
-                    break  # empty at the right edge: true end of data
+                    # Right-edge empty batch. Documented rule: this counts
+                    # as a TRUE end of data ("complete") ONLY when the
+                    # previous batch delivered candles AND the cursor
+                    # already reached the last fully expectable interval
+                    # (end_ms - ims) — i.e. the empty batch only concerns
+                    # the still-running, not-yet-closed candle. Anything
+                    # else (source ends early, empty-after-empty) is
+                    # marked INCOMPLETE — deliberately NOT the hard
+                    # ABORT/FAILED path, so a legitimately ending source
+                    # (e.g. listing started later) stays distinguishable
+                    # from a pipeline defect.
+                    last_full = end_ms - ims
+                    if total_loaded > 0 and current_ms >= last_full:
+                        break  # only the running candle missing
+                    print(f'\n  [{tf}] WARNING: source ends early at '
+                          f'{_ms_to_date(current_ms)} '
+                          f'({total_loaded:,}/{total_candles:,}) — INCOMPLETE')
+                    tf_incomplete = True
+                    break
 
                 # 2) Fetch Binance SPOT volume+delta for same range and merge.
                 #    Failures leave a spot gap — warn throttled, count for the
@@ -300,21 +320,30 @@ def load_history(coin='BTC', start_date=None, end_date=None,
             print(f'\n  [{tf:>3s}] spot-merge missing for {spot_missing_windows} windows')
         if total_loaded == 0 and not tf_failed:
             print(f'\n  [{tf:>3s}] WARNING: 0 candles loaded — source has no data for this range')
-        # complete = the loader walked the window to the right edge (an
-        # empty batch at the right edge counts as end of data, not as a
-        # gap). INCOMPLETE only via the abort path -> TF counts as failed.
-        status = 'INCOMPLETE' if tf_failed else 'complete'
+        # complete = the loader reached the last full interval before the
+        # running candle. INCOMPLETE = source ended early (warning above,
+        # -> incomplete_tfs) or aborted (-> failed_tfs).
+        if tf_failed:
+            status = 'INCOMPLETE (aborted)'
+        elif tf_incomplete:
+            status = 'INCOMPLETE (source ended early)'
+        else:
+            status = 'complete'
         print(f'\n  [{tf:>3s}] Done: {total_loaded:,}/{total_candles:,} loaded '
               f'({status}) in {elapsed:.1f}s, DB total: {n_db:,}')
         print()
 
         if tf_failed:
             failed_tfs.append(tf)
+        elif tf_incomplete:
+            incomplete_tfs.append(tf)
         else:
             ok_tfs.append(tf)
 
-    # Final summary: which timeframes completed and which failed.
+    # Final summary: which timeframes completed, which are suspect, which failed.
     print(f'  Summary: {len(ok_tfs)} TF(s) ok ({", ".join(ok_tfs) or "-"})')
+    if incomplete_tfs:
+        print(f'  INCOMPLETE: {", ".join(incomplete_tfs)} (source ended early)')
     if failed_tfs:
         print(f'  FAILED: {", ".join(failed_tfs)}')
 
