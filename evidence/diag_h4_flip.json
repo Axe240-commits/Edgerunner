@@ -2719,12 +2719,12 @@
    "--exec-tf",
    "1h",
    "--json-out",
-   "C:\\edgerunner\\diag_h4_flip_v2fix.json",
+   "evidence\\diag_h4_flip.json",
    "--md-out",
-   "C:\\edgerunner\\diag_h4_flip_v2fix.md"
+   "evidence\\diag_h4_flip.md"
   ],
-  "git_commit": "7f7086ce646d738d393161d301e1efbf224ff846",
-  "timestamp": 1785141800.8373885,
+  "git_commit": "50c0bfd82a93f36fb399b5a2acba16fd11c967cf",
+  "timestamp": 1785148050.2108138,
   "db_path": "C:\\edgerunner\\edgerunner.db",
   "table_rows": {
    "candles_4h": 3300,

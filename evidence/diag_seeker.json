@@ -2240,12 +2240,12 @@
    "--mode",
    "diagnose",
    "--json-out",
-   "C:\\edgerunner\\diag_seeker_v2fix.json",
+   "evidence\\diag_seeker.json",
    "--md-out",
-   "C:\\edgerunner\\diag_seeker_v2fix.md"
+   "evidence\\diag_seeker.md"
   ],
-  "git_commit": "7f7086ce646d738d393161d301e1efbf224ff846",
-  "timestamp": 1785141801.634983,
+  "git_commit": "50c0bfd82a93f36fb399b5a2acba16fd11c967cf",
+  "timestamp": 1785148051.0099642,
   "db_path": "C:\\edgerunner\\edgerunner.db",
   "table_rows": {
    "candles_4h": 3300,

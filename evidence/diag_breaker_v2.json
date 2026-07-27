@@ -2099,12 +2099,12 @@
    "--slippage-bps",
    "5",
    "--json-out",
-   "C:\\edgerunner\\diag_breaker_v2fix.json",
+   "evidence\\diag_breaker_v2.json",
    "--md-out",
-   "C:\\edgerunner\\diag_breaker_v2fix.md"
+   "evidence\\diag_breaker_v2.md"
   ],
-  "git_commit": "7f7086ce646d738d393161d301e1efbf224ff846",
-  "timestamp": 1785141799.4293697,
+  "git_commit": "50c0bfd82a93f36fb399b5a2acba16fd11c967cf",
+  "timestamp": 1785148048.8022664,
   "db_path": "C:\\edgerunner\\edgerunner.db",
   "table_rows": {
    "candles_15m": 52800,
